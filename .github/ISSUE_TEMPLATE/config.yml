@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全漏洞（不要开 Issue）
+    url: https://github.com/KillerMan12345/OmniLore/security/advisories
+    about: 漏洞请走 GitHub Security Advisory 私密披露，见 SECURITY.md。
+  - name: 问题讨论与用法交流
+    url: https://github.com/KillerMan12345/OmniLore/discussions
+    about: 不是缺陷也不是需求？来 Discussions 聊。

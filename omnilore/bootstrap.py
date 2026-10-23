@@ -42,7 +42,7 @@ import re
 import secrets
 import subprocess
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import warnings
 
 from .textio import read_text_canonical, write_text_canonical
@@ -56,6 +56,26 @@ DEFAULT_CATEGORIES = ("01_Work", "02_Life", "03_Family", "04_Health_Archive")
 
 BOOTSTRAP_STATE_FILENAME = "bootstrap.json"
 SUPPORTED_STATE_VERSION = 1
+
+# 本项目**认识**的 OMNILORE_* 环境变量（R-16 修复：拼错的变量名必须被看见）。
+# 为什么需要这份清单：代码只读 `os.environ`，也不加载 `.env`；把
+# `OMNILORE_PROTECTED_FRONTMATTER` 写成 `...FRONTMATTRE` 不会报错，只会静默回落到
+# 默认全保护 —— 用户以为自己关掉了保护，其实没有。这份清单让启动回显能点名它。
+KNOWN_OMNILORE_ENV_NAMES: Tuple[str, ...] = (
+    "OMNILORE_AUTO_BOOTSTRAP",
+    "OMNILORE_BOOTSTRAP_TOKEN",
+    "OMNILORE_CONFLICT_DIR",
+    "OMNILORE_DATA_DIR",
+    "OMNILORE_EMBEDDING_DIM",
+    "OMNILORE_EMBEDDING_MODEL",
+    "OMNILORE_ESCALATED_MODEL",
+    "OMNILORE_INTERNAL_API_URL",
+    "OMNILORE_MIGRATOR_DSN",
+    "OMNILORE_PRIMARY_MODEL",
+    "OMNILORE_PROTECTED_FRONTMATTER",
+    "OMNILORE_TELEMETRY",
+    "OMNILORE_WORKER_SCOPED_TOKEN",
+)
 
 
 @dataclass(frozen=True)
@@ -356,6 +376,82 @@ def _wait_for(predicate: Callable[[], bool], *, attempts: int = 5, delay: float 
         if attempt + 1 < attempts:
             time.sleep(delay)
     return False
+
+
+def unknown_omnilore_env_names() -> List[str]:
+    """返回进程里以 `OMNILORE_` 开头、但本项目不认识的环境变量名。
+
+    Returns:
+        排序后的变量名列表；全部认识时返回空列表。
+
+    Notes:
+        这是 R-16 / P2-1 的守卫：变量名拼错时不会报错、不会生效，只会静默回落默认
+        行为。与其让用户以为「我关掉了保护」，不如启动时直接点名它。
+    """
+    return sorted(
+        name for name in os.environ
+        if name.startswith("OMNILORE_") and name not in KNOWN_OMNILORE_ENV_NAMES
+    )
+
+
+def render_sovereignty_notice() -> List[str]:
+    """回显**当前进程真正生效**的主权配置（受保护字段 / 冲突副本目录）。
+
+    为什么必须有这段回显：`OMNILORE_PROTECTED_FRONTMATTER`、`OMNILORE_CONFLICT_DIR`
+    只在**进程环境变量**里生效（本项目不读 `.env`），容器模式下还要靠 compose 转发。
+    任何一环断了，用户都会得到「静默无效」——这正是主权承诺最坏的失效方式。
+    把生效值打出来，失效就变成**可见**的。
+
+    Returns:
+        若干行可直接打印的文本；永不抛异常（配置错误也会被转成一行提示）。
+    """
+    from .engine import (  # 局部导入：避免 bootstrap ↔ engine 的循环依赖
+        CONFLICT_COPY_DIR_ENV,
+        DEFAULT_CONFLICT_COPY_DIR,
+        DEFAULT_PROTECTED_FRONTMATTER_KEYS,
+        OmniLoreError,
+        PROTECTED_FRONTMATTER_ENV,
+        get_conflict_copy_dir,
+        get_protected_frontmatter_keys,
+    )
+
+    lines: List[str] = []
+    try:
+        protected = get_protected_frontmatter_keys()
+    except OmniLoreError as exc:
+        protected = set(DEFAULT_PROTECTED_FRONTMATTER_KEYS)
+        lines.append(f"  ⚠️ {PROTECTED_FRONTMATTER_ENV} 取值无效：{exc}")
+        lines.append("     已回落到默认的全量保护；请修正后重启。")
+
+    total = len(DEFAULT_PROTECTED_FRONTMATTER_KEYS)
+    if protected >= DEFAULT_PROTECTED_FRONTMATTER_KEYS:
+        headline = f"受保护 frontmatter 字段（{len(protected)}/{total}，默认全保护）"
+    elif protected <= {"doc_id"}:
+        headline = f"受保护 frontmatter 字段（已整体关闭，仅保留身份锚点 doc_id；默认 {total}/{total}）"
+    else:
+        headline = f"受保护 frontmatter 字段（{len(protected)}/{total}，已自定义）"
+    # 变量名一并打出来：用户才知道「我刚才 export 的是哪一个」，也才看得出拼错。
+    lines.append(f"  {PROTECTED_FRONTMATTER_ENV} → {headline}：{', '.join(sorted(protected))}")
+
+    try:
+        conflict_dir = get_conflict_copy_dir()
+    except OmniLoreError as exc:
+        conflict_dir = DEFAULT_CONFLICT_COPY_DIR
+        lines.append(f"  ⚠️ {CONFLICT_COPY_DIR_ENV} 取值无效：{exc}")
+        lines.append(f"     已回落到默认目录 {DEFAULT_CONFLICT_COPY_DIR}。")
+    lines.append(f"  {CONFLICT_COPY_DIR_ENV} → 冲突副本目录（相对 wiki/）：{conflict_dir}")
+
+    unknown = unknown_omnilore_env_names()
+    if unknown:
+        lines.append(
+            "  ⚠️ 以下 OMNILORE_* 环境变量本项目不认识（疑似拼写错误，当前不生效）："
+            + "、".join(unknown)
+        )
+    lines.append(
+        "  说明：本进程只读取环境变量，不会自动读取 .env；容器模式请确认 "
+        "docker-compose.yml 已转发（已内置），或用 env_file 注入。"
+    )
+    return lines
 
 
 def save_bootstrap_state(data_dir: Path, *, space_id: str, user_id: str, raw_token: str) -> Path:

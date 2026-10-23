@@ -26,7 +26,12 @@ import sys
 from typing import Any, Callable, Dict, List, Optional
 
 from .version import __version__, __version_display__
-from .bootstrap import BootstrapResult, ensure_bootstrapped, render_mcp_config_snippet
+from .bootstrap import (
+    BootstrapResult,
+    ensure_bootstrapped,
+    render_mcp_config_snippet,
+    render_sovereignty_notice,
+)
 from .engine import OmniLoreEngine, OmniLoreMCPGateway, OmniLoreError
 from .pathutil import resolve_data_dir
 
@@ -72,6 +77,26 @@ def _print(text: str = "") -> None:
     sys.stdout.write(text + "\n")
 
 
+def _print_err(text: str = "") -> None:
+    """Write a line to **stderr** —— 诊断/回显专用，不污染 stdout 的机器可读输出。"""
+    sys.stderr.write(text + "\n")
+
+
+def _emit_sovereignty_notice() -> None:
+    """把「当前真正生效」的主权配置打到 stderr（每次启动一次）。
+
+    Why stderr: stdout 是「60 秒验证」的可抄录输出（`--json` 时更是机器可读 JSON），
+    诊断信息混进去会破坏逐字一致与脚本解析。两个开关只在进程环境变量里生效
+    （本进程不读 `.env`），容器模式下还要靠 compose 转发 —— 任何一环断了，用户都会
+    得到「静默无效」，这是主权承诺最坏的失效方式。打出来，失效就变成可见的。
+    """
+    _print_err()
+    _print_err("  [主权配置] 你的笔记你做主 —— 以下是本次启动实际生效的值：")
+    for line in render_sovereignty_notice():
+        _print_err(line)
+    _print_err()
+
+
 def _print_bootstrap_result(result: BootstrapResult, *, mcp_config: bool = True) -> None:
     """Pretty-print a bootstrap result, including the token and MCP client snippet."""
     hint_note = "（已复用既有 token）" if result.reused_state and not result.created_token else "（新签发）"
@@ -96,7 +121,11 @@ def _print_bootstrap_result(result: BootstrapResult, *, mcp_config: bool = True)
         _print()
         for line in render_mcp_config_snippet(result).splitlines():
             _print("    " + line)
-    _print()
+
+    # R-16 / P1-1：把「当前真正生效」的主权配置打出来（走 stderr，见 helper 注释）。
+    # 放在最后一段，不影响 README 里「60 秒验证」那段 stdout 节选。
+    _print()  # 保留 stdout 结尾的空行，与加入回显之前逐字一致
+    _emit_sovereignty_notice()
 
 
 async def _async_bootstrap(args: Namespace) -> Dict[str, Any]:
@@ -124,6 +153,9 @@ async def _async_bootstrap(args: Namespace) -> Dict[str, Any]:
     payload["mcp_client_config"] = json.loads(render_mcp_config_snippet(result))
     if args.json:
         _print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        # `--json` 的消费者同样需要知道「配置到底生效了没」；stderr 是诊断通道，
+        # 不会破坏 stdout 上的 JSON。这里仍然只打印一次。
+        _emit_sovereignty_notice()
     else:
         _print_bootstrap_result(result, mcp_config=not args.quiet)
     return payload

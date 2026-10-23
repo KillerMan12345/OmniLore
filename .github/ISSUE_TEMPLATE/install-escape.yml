@@ -1,0 +1,65 @@
+name: 我放弃了（首启逃生通道）
+description: 装不上、不想再折腾了 —— 选这里，自动打 P0-escape，我们优先处理。
+title: "[escape] "
+labels: ["install-failure", "P0-escape"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **你愿意点开这个模板，就是给我们最重要的一条数据。**
+        > 本模板会自动打上 `P0-escape`，进入最高优先队列。
+        > 全程下拉单选 —— 你不需要写任何解释，也不需要为「表达不清」负责。
+
+  - type: dropdown
+    id: where_gave_up
+    attributes:
+      label: 你在哪一步放弃的？
+      options:
+        - "还没开始（看了 README 就觉得太麻烦）"
+        - "环境准备（Python / venv / pip）"
+        - "pip install -e ."
+        - "omnilore bootstrap"
+        - "omnilore demo"
+        - "接 MCP 客户端"
+        - "跑通了，但不知道接下来能干嘛"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reason
+    attributes:
+      label: 放弃的主要原因是？
+      options:
+        - "报错看不懂，也不知道该问谁"
+        - "耗时太长，超出我的预期"
+        - "不确定它会不会往我的笔记里写东西（不信任）"
+        - "不确定它值不值得我投入时间（看不到价值）"
+        - "功能和我预期不符"
+        - "只是随手试试，本来就不打算用"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - "Windows（原生）"
+        - "Windows + WSL"
+        - "macOS"
+        - "Linux"
+        - "Docker / 容器"
+        - "其他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: would_retry
+    attributes:
+      label: 如果我们修好了，你还愿意再试一次吗？
+      options:
+        - "愿意，请 @ 我"
+        - "看情况"
+        - "不会再试了"
+    validations:
+      required: false

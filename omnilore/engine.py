@@ -236,7 +236,17 @@ def compute_idempotency_key(
 # 2. Markdown Frontmatter Contract & Validator (Section 5.5)
 # =============================================================================
 
-PROTECTED_FRONTMATTER_KEYS: Set[str] = {
+# ---------------------------------------------------------------------------
+# R-16（P2 主权）：受保护字段与冲突副本目录**都归用户所有，可以关掉**
+# ---------------------------------------------------------------------------
+# 设计前提：Obsidian 重度用户（P2）的笔记是他们的资产。系统为了可审计性需要往
+# frontmatter 里写若干系统字段，但「我能不能改我自己的笔记」这个问题上，主权在
+# 用户手里，不在我们手里。因此：
+#   1. 受保护字段集合**可配置**，甚至可以整体关闭（环境变量 `OMNILORE_PROTECTED_FRONTMATTER`）；
+#   2. 冲突副本不再散落在用户的 vault 里，统一落到隐藏目录（环境变量 `OMNILORE_CONFLICT_DIR`）。
+# 唯一不可关闭的是 `doc_id`：它是同步时定位目标文档的身份锚点，放开等于让文本
+# 编辑改写身份，这不是主权问题而是正确性问题。
+DEFAULT_PROTECTED_FRONTMATTER_KEYS: Set[str] = {
     "doc_id",
     "space_id",
     "series_id",
@@ -248,13 +258,165 @@ PROTECTED_FRONTMATTER_KEYS: Set[str] = {
     "review_status",
 }
 
+# 身份锚点：永远受保护，不参与用户配置。
+IMMUTABLE_PROTECTED_FRONTMATTER_KEYS: Set[str] = {"doc_id"}
+
+# 可与数据库当前值逐字段比对的「归属类」字段：其余受保护字段（如 source_asset_ids）
+# 只做「必须存在」的契约校验，不做值比对 —— 放开它们不会产生歧义。
+COMPARABLE_PROTECTED_FRONTMATTER_KEYS: Set[str] = {"space_id", "series_id", "version_key", "version_label"}
+
 EDITABLE_FRONTMATTER_KEYS: Set[str] = {
     "title",
     "summary",
     "tags",
 }
 
-ALLOWED_FRONTMATTER_KEYS: Set[str] = PROTECTED_FRONTMATTER_KEYS | EDITABLE_FRONTMATTER_KEYS
+# 环境变量名（同步到 .env.example / README）
+PROTECTED_FRONTMATTER_ENV: str = "OMNILORE_PROTECTED_FRONTMATTER"
+CONFLICT_COPY_DIR_ENV: str = "OMNILORE_CONFLICT_DIR"
+
+# 默认冲突目录：以 `.` 开头，因此 **Obsidian 默认忽略**它（点号开头的目录不进
+# Obsidian 的文件树），从而不污染 P2 用户的 vault。
+# 注意：Windows 资源管理器**仍然可见** —— NTFS 不因点号隐藏目录，别对 Windows
+# 用户说「文件系统层也隐藏」（那是事实错误，本项目 CI 含 windows-latest）。
+DEFAULT_CONFLICT_COPY_DIR: str = ".omnilore/conflicts"
+
+# 关闭保护的写法（大小写不敏感）
+_PROTECTION_OFF_TOKENS: Set[str] = {"none", "off", "0", "false", "disabled"}
+
+
+def _with_identity_anchor(keys: Set[str]) -> Set[str]:
+    """把不可关闭的身份锚点（`doc_id`）并入受保护集合。
+
+    Why a helper instead of inlining `keys | IMMUTABLE_PROTECTED_FRONTMATTER_KEYS`:
+    `parse_protected_frontmatter_keys` 有三条返回路径（未设置 / 整体关闭 / 白名单），
+    只有前两条写过并集。「doc_id 永不放开」是正确性红线，不能只靠每个分支各自记得
+    写一遍 —— 一旦有人新增第四条分支忘了并集，红线就静默失守。因此**所有**返回
+    路径都过这个函数，测试也直接对三条分支逐一断言。
+
+    Args:
+        keys: 某个分支解析出的受保护字段集合（可能不含 `doc_id`）。
+
+    Returns:
+        保证含 `doc_id` 的受保护字段集合。
+    """
+    return set(keys) | IMMUTABLE_PROTECTED_FRONTMATTER_KEYS
+
+
+def parse_protected_frontmatter_keys(raw_value: Optional[str]) -> Set[str]:
+    """把 `OMNILORE_PROTECTED_FRONTMATTER` 的取值解析为受保护字段集合。
+
+    Args:
+        raw_value: 环境变量原始取值。逗号分隔的字段名；`none` / `off` / 空串表示
+            **整体关闭保护**（仅保留不可关闭的 `doc_id`）；`None` 表示未设置，
+            使用默认集合。
+
+    Returns:
+        受保护的 frontmatter 字段名集合，必含 `doc_id`。
+
+    Raises:
+        OmniLoreError: 取值中出现未知字段名时抛出（配置错误必须响亮失败，
+            而不是被静默忽略成「保护已关闭」）。
+    """
+    if raw_value is None:
+        return _with_identity_anchor(set(DEFAULT_PROTECTED_FRONTMATTER_KEYS))
+    value = raw_value.strip()
+    if not value or value.lower() in _PROTECTION_OFF_TOKENS:
+        return _with_identity_anchor(set())
+    keys = {part.strip() for part in value.split(",") if part.strip()}
+    unknown = keys - DEFAULT_PROTECTED_FRONTMATTER_KEYS
+    if unknown:
+        raise OmniLoreError(
+            "CONFIG_ERROR",
+            f"{PROTECTED_FRONTMATTER_ENV} 含未知字段名 {sorted(unknown)}；"
+            f"可选项：{sorted(DEFAULT_PROTECTED_FRONTMATTER_KEYS)}，"
+            "或设为 none 整体关闭保护",
+        )
+    return _with_identity_anchor(keys)
+
+
+def get_protected_frontmatter_keys() -> Set[str]:
+    """读取当前进程生效的受保护 frontmatter 字段集合（每次都重新读环境变量，便于测试）。"""
+    return parse_protected_frontmatter_keys(os.environ.get(PROTECTED_FRONTMATTER_ENV))
+
+
+def get_editable_frontmatter_keys(protected_keys: Optional[Set[str]] = None) -> Set[str]:
+    """返回当前可自由编辑的字段集合：原生可编辑字段 + 用户主动放开的系统字段。"""
+    protected = protected_keys if protected_keys is not None else get_protected_frontmatter_keys()
+    return EDITABLE_FRONTMATTER_KEYS | (DEFAULT_PROTECTED_FRONTMATTER_KEYS - protected)
+
+
+def get_allowed_frontmatter_keys(protected_keys: Optional[Set[str]] = None) -> Set[str]:
+    """返回 schema 允许出现的全部字段：受保护字段 + 可编辑字段。"""
+    protected = protected_keys if protected_keys is not None else get_protected_frontmatter_keys()
+    return protected | get_editable_frontmatter_keys(protected)
+
+
+def get_required_frontmatter_keys(protected_keys: Optional[Set[str]] = None) -> Set[str]:
+    """返回解析磁盘 Markdown 时**必须存在**的字段：即当前受保护的字段。"""
+    protected = protected_keys if protected_keys is not None else get_protected_frontmatter_keys()
+    return set(protected)
+
+
+def parse_conflict_copy_dir(raw_value: Optional[str]) -> str:
+    """解析冲突副本隐藏目录（相对 `spaces/<space_id>/wiki/`）。
+
+    Args:
+        raw_value: 环境变量原始取值；`None` 或空串使用默认值 `.omnilore/conflicts`。
+
+    Returns:
+        规范化后的相对目录（不含首尾斜杠）。
+
+    Raises:
+        OmniLoreError: 取值是绝对路径或含 `..` 时抛出 —— 冲突目录同样受文件网关约束。
+    """
+    value = (raw_value or "").strip().strip("/\\")
+    if not value:
+        return DEFAULT_CONFLICT_COPY_DIR
+    if "\x00" in value or ".." in value.split("/") or value.startswith(("/", "\\")):
+        raise OmniLoreError(
+            "CONFIG_ERROR",
+            f"{CONFLICT_COPY_DIR_ENV} 必须是 vault 内的相对目录且不含 '..'：{raw_value!r}",
+        )
+    return value
+
+
+def get_conflict_copy_dir() -> str:
+    """读取当前进程生效的冲突副本隐藏目录。"""
+    return parse_conflict_copy_dir(os.environ.get(CONFLICT_COPY_DIR_ENV))
+
+
+def build_conflict_copy_rel_path(
+    wiki_rel_path: str,
+    content_revision: int,
+    conflict_dir: Optional[str] = None,
+) -> str:
+    """构造冲突副本的相对路径：`<space>/wiki/<隐藏目录>/<原名>.conflict_r<N>.md`。
+
+    Args:
+        wiki_rel_path: 原文档的相对路径，形如 `<space_id>/wiki/<name>.md`。
+        content_revision: 磁盘上编辑器基于的（过期的）内容版本号。
+        conflict_dir: 覆盖隐藏目录；为 None 时取当前配置。
+
+    Returns:
+        冲突副本的相对路径，仍然满足 `write_wiki_by_record` 的
+        `<space_id>/wiki/...` 前缀约束，因此**继续受文件网关保护**。
+
+    Raises:
+        OmniLoreError: `wiki_rel_path` 不是合法的 `<space_id>/wiki/...` 形态时抛出。
+    """
+    space_id, sep, tail = wiki_rel_path.partition("/wiki/")
+    if not sep or not space_id or not tail:
+        raise OmniLoreError("INVALID_WIKI_REL_PATH", f"非法的 wiki 相对路径：{wiki_rel_path!r}")
+    stem = tail[:-3] if tail.endswith(".md") else tail
+    hidden_dir = (conflict_dir or get_conflict_copy_dir()).strip().strip("/\\")
+    return f"{space_id}/wiki/{hidden_dir}/{stem}.conflict_r{content_revision}.md"
+
+
+# 兼容既有引用：这两个名字在 v0.3.0-alpha 早期就是模块级常量，保留其语义
+# （「默认集合」），但**动态生效**的值一律走上面的 getter。
+PROTECTED_FRONTMATTER_KEYS: Set[str] = set(DEFAULT_PROTECTED_FRONTMATTER_KEYS)
+ALLOWED_FRONTMATTER_KEYS: Set[str] = DEFAULT_PROTECTED_FRONTMATTER_KEYS | EDITABLE_FRONTMATTER_KEYS
 
 
 @dataclass
@@ -264,7 +426,7 @@ class ParsedWikiMarkdown:
 
 
 def render_wiki_markdown(frontmatter: Dict[str, Any], body: str) -> str:
-    unknown_keys = set(frontmatter.keys()) - ALLOWED_FRONTMATTER_KEYS
+    unknown_keys = set(frontmatter.keys()) - get_allowed_frontmatter_keys()
     if unknown_keys:
         raise OmniLoreError(
             "FRONTMATTER_SCHEMA_ERROR",
@@ -305,24 +467,17 @@ def parse_and_validate_wiki_markdown(raw_markdown: str) -> ParsedWikiMarkdown:
     if not isinstance(parsed, dict):
         raise OmniLoreError("FRONTMATTER_SCHEMA_ERROR", "Frontmatter must be a YAML mapping")
 
-    unknown = set(parsed.keys()) - ALLOWED_FRONTMATTER_KEYS
+    # R-16：schema 边界随用户配置收缩/放开。放开的系统字段从「受保护」变为「可编辑」，
+    # 因此不会出现「既不在白名单、又被拒绝」的死区。
+    allowed = get_allowed_frontmatter_keys()
+    unknown = set(parsed.keys()) - allowed
     if unknown:
         raise OmniLoreError(
             "FRONTMATTER_SCHEMA_ERROR",
             f"Arbitrary unknown frontmatter fields are prohibited: {sorted(unknown)}",
         )
 
-    required = {
-        "doc_id",
-        "space_id",
-        "series_id",
-        "version_key",
-        "version_label",
-        "source_asset_ids",
-        "source_task_id",
-        "content_revision",
-        "review_status",
-    }
+    required = get_required_frontmatter_keys()
     missing = required - set(parsed.keys())
     if missing:
         raise OmniLoreError(
@@ -330,7 +485,9 @@ def parse_and_validate_wiki_markdown(raw_markdown: str) -> ParsedWikiMarkdown:
             f"Missing required system frontmatter fields: {sorted(missing)}",
         )
 
-    if not isinstance(parsed.get("content_revision"), int) or parsed["content_revision"] < 1:
+    if "content_revision" in required and (
+        not isinstance(parsed.get("content_revision"), int) or parsed["content_revision"] < 1
+    ):
         raise OmniLoreError("FRONTMATTER_SCHEMA_ERROR", "content_revision must be a positive integer")
     if not isinstance(parsed.get("tags", []), list):
         raise OmniLoreError("FRONTMATTER_SCHEMA_ERROR", "tags must be a list of strings")
@@ -2351,12 +2508,21 @@ class OmniLoreEngine:
             doc = docs[0]
             series = conn.select_rows("document_series", lambda s: s["series_id"] == doc["series_id"])[0]
 
-            if (
-                fm["space_id"] != doc["space_id"]
-                or fm["series_id"] != doc["series_id"]
-                or fm["version_key"] != series["version_key"]
-                or fm["version_label"] != doc["version_label"]
-            ):
+            # R-16：只比对**当前仍受保护**的归属字段。用户把某个字段从白名单里去掉，
+            # 就等于把这个字段的主权收回去了 —— 我们不再因为「你改了自己的笔记」而拒绝同步。
+            protected_keys = get_protected_frontmatter_keys()
+            expected_values = {
+                "space_id": doc["space_id"],
+                "series_id": doc["series_id"],
+                "version_key": series["version_key"],
+                "version_label": doc["version_label"],
+            }
+            comparable = COMPARABLE_PROTECTED_FRONTMATTER_KEYS & protected_keys
+            mismatched = sorted(
+                key for key, value in expected_values.items()
+                if key in comparable and fm.get(key) != value
+            )
+            if mismatched:
                 self._record_audit(
                     scope.user_id,
                     doc["space_id"],
@@ -2371,10 +2537,18 @@ class OmniLoreEngine:
                     "status": "REJECTED_PROTECTED_FIELD_MODIFICATION",
                     "doc_id": doc_id,
                     "reason": "System-controlled frontmatter fields cannot be altered via text edits",
+                    "rejected_fields": mismatched,
+                    # 告诉调用方（与用户）：想改这些字段，改配置就能改。
+                    "hint": f"可通过 {PROTECTED_FRONTMATTER_ENV} 调整受保护字段白名单",
                 }
 
-            if fm["content_revision"] != doc["content_revision"]:
-                conflict_rel = wiki_rel_path.replace(".md", f".conflict_r{fm['content_revision']}.md")
+            # 乐观并发检测：仅在磁盘 frontmatter 里带了可解析的 content_revision 时生效。
+            # 用户把 content_revision 也放开保护并删掉该字段，等于主动放弃并发检测 ——
+            # 我们不静默丢他的改动，只是不再拦。
+            disk_revision = fm.get("content_revision")
+            if isinstance(disk_revision, int) and disk_revision != doc["content_revision"]:
+                # R-16：冲突副本落隐藏目录，不再散落在用户的 vault 里。
+                conflict_rel = build_conflict_copy_rel_path(wiki_rel_path, disk_revision)
                 self.storage.write_wiki_by_record(doc["space_id"], conflict_rel, edited_markdown_on_disk)
                 self._record_audit(
                     scope.user_id,

@@ -1,0 +1,44 @@
+name: Triage
+
+# 为什么有这个 workflow：GitHub 的 Issue 表单**不支持**「按选项打标签」，
+# 而我们要的是**可统计**的分流 —— 于是把「选项 → 标签」的映射放到这里自动完成：
+#   · 选了「我已放弃」           → 自动打 `P0-escape`
+#   · 选了「疑似越权」           → 自动打 `security-triage`
+# 表单只负责让人**少写字**，标签由机器补，分布统计才不会被自由文本毁掉。
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  escalate:
+    name: auto-label escalations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply escalation labels from issue body markers
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || "";
+            const markers = [
+              { text: "我已放弃", label: "P0-escape" },
+              { text: "疑似越权", label: "security-triage" },
+            ];
+            const hits = markers
+              .filter((m) => body.includes(m.text))
+              .map((m) => m.label);
+            if (hits.length === 0) {
+              core.info("无升级标记，跳过自动打标签。");
+              return;
+            }
+            core.info(`命中升级标记，打标签：${hits.join(", ")}`);
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              labels: hits,
+            });

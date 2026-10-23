@@ -103,6 +103,52 @@ git commit --amend -s --no-edit
 > **如果你确实要改 `engine.py`**：请先开 Issue 说明动机。架构级重构已排期在 Q2 之后，
 > 我们不希望在 alpha 阶段引入难以评审的大范围重写。
 
+### 路径 6 之外还有一条：验证命令（`Makefile`）
+
+`Makefile` 里的每个 `verify-*` 目标对应 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)
+里的一组能力标注。新增能力时请顺带确认：既有目标能不能覆盖它，不能就补一个目标。
+没有 `make` 的环境（原生 Windows）直接照抄目标里 `echo` 出来的命令即可。
+
+---
+
+## 3.1 提 Issue：请用模板，且模板是「可统计」的
+
+`.github/ISSUE_TEMPLATE/` 下有 6 套表单：
+
+| 模板 | 用途 | 自动标签 |
+|---|---|---|
+| `install-failure.yml` | 装不上 / 60 秒验证没跑通（**首启成功率的唯一数据源**，含「卡住多久？」） | `install-failure` |
+| `install-escape.yml` | 「我放弃了」逃生通道 | `install-failure` + `P0-escape` |
+| `retrieval-quality.yml` | 召回 / 排序 / 答案不符；选项含「疑似越权」 | `retrieval-quality`（+`security-triage`） |
+| `bug-report.yml` | 行为与文档不符 | `bug` |
+| `feature-request.yml` | 新能力建议（按 persona 统计分布） | `enhancement` |
+| `contribution-proposal.yml` | 想动手，先选路径 | `contribution` |
+
+两条设计约束，改模板时请遵守：
+
+1. **下拉单选优先于自由文本** —— 自由文本无法做分布统计，而我们要的是分布。
+   新增问题请先问自己「能不能变成 3~7 个选项」。
+2. **升级标签必须自动打** —— GitHub 表单不支持「按选项打标签」，因此映射放在
+   `.github/workflows/triage.yml`（「我已放弃」→ `P0-escape`；「疑似越权」→ `security-triage`）。
+   新增升级标记时，两处一起改。
+
+**安全漏洞不走 Issue 模板**，走 GitHub Security Advisory（见 `SECURITY.md`）。
+
+---
+
+## 3.2 诚实标注：改了能力就要改三处
+
+本项目的头号风险是「宣称与证据不匹配」。因此任何能力的新增或变更，都要同步三处：
+
+1. `README.md`「核心能力」小节的**四态标注**（`Implemented` / `Tested-real` / `Simulated` / `Planned`）；
+2. [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 的矩阵行（含验证命令）；
+3. `CHANGELOG.md` 的统计数字。
+
+三处不一致会直接红：`make verify-honesty`（或 `python -m unittest tests.test_w2_w3_roadmap -v`）。
+
+**判定口径**：只要验证跑在内存仿真引擎（`RLSDatabaseEngine`）上、真实外部依赖没有 CI 证据，
+就标 `Simulated` —— **不许**标 `Tested-real`。宁可降级标注，也不虚标。
+
 ---
 
 ## 4. Pull Request 检查清单
@@ -116,6 +162,9 @@ git commit --amend -s --no-edit
       `file_hash` 对账搞坏，见 CHANGELOG 的 CRLF 条目）
 - [ ] 没有引入新的网络依赖到“零 API Key”首次运行路径
 - [ ] 涉及输出时用简体中文，且不含 `production` / `stable` / `企业就绪` 类措辞
+- [ ] 新增/变更了能力宣称 → 已同步 README 四态标注、`docs/FEATURE_STATUS.md`、`CHANGELOG.md`
+      三处，并跑过 `make verify-honesty`
+- [ ] 新增了环境变量 → 已同步 `.env.example` 并标注**必填 / 可选**
 - [ ] 版本号如需变更，同步更新 `pyproject.toml`、`omnilore/__init__.py`、
       `CHANGELOG.md` 三处
 

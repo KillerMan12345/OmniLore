@@ -1,0 +1,66 @@
+name: 功能建议
+description: 想要什么能力，以及你是谁 —— 我们按人群分布排期，不按声音大小。
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: persona
+    attributes:
+      label: 你主要属于哪类用户？
+      description: 用于按人群统计需求分布。
+      options:
+        - "P1：知识工作者 / 研究者"
+        - "P2：Obsidian 重度用户"
+        - "P3：家庭共享（健康档案等）"
+        - "P4：企业 / 团队知识库"
+        - "Agent / 应用开发者（用 MCP 调 OmniLore）"
+        - "贡献者（想改代码）"
+        - "其他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: domain
+    attributes:
+      label: 你想增强的能力域是？
+      options:
+        - "入库与解析（更多格式 / 更准的抽取）"
+        - "检索与排序质量"
+        - "权限与多空间"
+        - "Obsidian / 编辑体验"
+        - "运维与可观测（备份、对账、遥测）"
+        - "MCP / 集成（n8n、其他客户端）"
+        - "性能与资源占用"
+        - "其他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: blocker_level
+    attributes:
+      label: 没有它，你会怎样？
+      options:
+        - "完全用不了 OmniLore"
+        - "能用，但很别扭"
+        - "锦上添花"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: willing
+    attributes:
+      label: 你愿意参与实现吗？
+      options:
+        - "愿意自己提 PR"
+        - "愿意配合测试 / 提供样本"
+        - "只提需求，不参与实现"
+    validations:
+      required: true
+
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 具体场景（可选）
+      description: 一句话说清「我在什么情况下想干什么」。
+    validations:
+      required: false

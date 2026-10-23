@@ -1,0 +1,68 @@
+name: 缺陷报告
+description: 行为与文档/预期不符（非安装失败、非检索质量）。
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: 涉及模块
+      options:
+        - "CLI（omnilore bootstrap / demo / version）"
+        - "MCP stdio 服务与工具"
+        - "入库与解析（PDF / 图片 / 代码）"
+        - "Obsidian 同步与 frontmatter"
+        - "权限与空间（RLS / 组织树）"
+        - "版本与审核动作"
+        - "运维（备份 / 恢复 / 对账）"
+        - "文档与示例"
+        - "其他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: 严重程度
+      options:
+        - "阻断：完全用不了"
+        - "严重：核心功能受影响，有绕法"
+        - "一般：影响体验，不影响结果"
+        - "轻微：措辞 / 显示问题"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: reproducibility
+    attributes:
+      label: 复现频率
+      options:
+        - "必现"
+        - "经常"
+        - "偶发"
+        - "只出现过一次"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 运行模式
+      options:
+        - "本地模式（内存引擎）"
+        - "容器模式（PostgreSQL）"
+        - "不确定"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 越短越好；请脱敏（不要贴 token、真实路径、个人信息）。
+      placeholder: |
+        1. omnilore bootstrap
+        2. omnilore demo
+        3. ...
+    validations:
+      required: true

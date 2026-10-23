@@ -1,0 +1,88 @@
+name: 安装失败（首启成功率唯一数据源）
+description: 60 秒验证没跑通？这是「首启成功率」的唯一数据来源，请只填选项、不用写作文。
+title: "[install-failure] "
+labels: ["install-failure"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > 感谢你停下来填这张表 —— **首启成功率**这个指标只有这一个数据来源。
+        > 全部用下拉单选，是为了让分布可以被统计（自由文本无法做分布统计）。
+
+  - type: dropdown
+    id: blocked_step
+    attributes:
+      label: 卡在哪一步？
+      description: 选第一次失败的环节。
+      options:
+        - "第 0 步：环境准备（Python / venv / pip 本身报错）"
+        - "第 1 步：git clone / 进入目录"
+        - "第 2 步：pip install -e ."
+        - "第 3 步：omnilore bootstrap"
+        - "第 4 步：omnilore demo"
+        - "第 5 步：把 MCP 客户端接上（Cursor / Claude Desktop 等）"
+        - "都跑通了，但结果和我预期不一样"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stuck_duration
+    attributes:
+      label: 卡住多久？
+      description: 用于判断严重度；选「我已放弃」会自动进入 P0 优先队列。
+      options:
+        - "< 5 分钟"
+        - "5 ~ 30 分钟"
+        - "30 分钟 ~ 2 小时"
+        - "> 2 小时，但还想再试试"
+        - "我已放弃（请一并提交「我放弃了」模板，会自动打上 P0-escape 标签）"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - "Windows（原生）"
+        - "Windows + WSL"
+        - "macOS"
+        - "Linux"
+        - "Docker / 容器"
+        - "其他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: python_version
+    attributes:
+      label: Python 版本
+      options:
+        - "3.11"
+        - "3.12"
+        - "3.13"
+        - "3.10 或更低"
+        - "不知道"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mode
+    attributes:
+      label: 走的是哪条路？
+      options:
+        - "本地模式（pip install -e .，内存引擎）"
+        - "容器模式（docker compose）"
+        - "没注意，跟着 README 第一条命令走的"
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: 报错原文（可选，贴最后 20 行即可）
+      description: |
+        请**不要**贴 token、私钥或你的真实文件路径。
+      render: shell
+    validations:
+      required: false

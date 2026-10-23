@@ -21,7 +21,7 @@ All tests are fully offline: no network, no real API key, no PostgreSQL.
 
 from __future__ import annotations
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import importlib
 import inspect
 import io
@@ -656,7 +656,14 @@ class TestReadmeClaimAccuracy(unittest.TestCase):
         self._assert_claims("测试用例总数", claimed, total)
 
     def test_per_file_case_count_claims(self) -> None:
-        for filename in ("test_omnilore_phase0_acceptance.py", "test_full_omnilore_suite.py", "test_w0_launch.py"):
+        # 每个在目录树里标注了「N 项」的测试文件都必须被逐个核对 —— 漏掉一个，
+        # README 上那个数字就可以被随便改写而不被察觉（曾漏了 test_w2_w3_roadmap.py）。
+        for filename in (
+            "test_omnilore_phase0_acceptance.py",
+            "test_full_omnilore_suite.py",
+            "test_w0_launch.py",
+            "test_w2_w3_roadmap.py",
+        ):
             claimed = re.findall(rf"{re.escape(filename)}\s+#.*?(\d+) 项", self.text)
             if not claimed:
                 continue  # 该文件未在目录树中标注项数，跳过
@@ -700,7 +707,9 @@ class TestCliEntryPoint(unittest.TestCase):  # sync: main() owns its own event l
 
         buf.seek(0)
         buf.truncate(0)
-        with redirect_stdout(buf):
+        # `bootstrap` 会把「生效中的主权配置」写到 stderr（诊断通道）；测试里收走，
+        # 免得每次跑测试都在日志里刷屏。
+        with redirect_stdout(buf), redirect_stderr(io.StringIO()):
             rc_bootstrap = main(["bootstrap", "--data-dir", str(self.root), "--quiet"])
         self.assertEqual(rc_bootstrap, 0)
         self.assertIn("Owner Token", buf.getvalue())
@@ -866,7 +875,7 @@ class TestMcpStdioEntrypoint(unittest.TestCase):
         的承诺，而 README 对 `0` 的措辞是「关闭首启自动引导」，读不出「已有 token 作废」。
         """
         buf = io.StringIO()
-        with redirect_stdout(buf):
+        with redirect_stdout(buf), redirect_stderr(io.StringIO()):
             rc_bootstrap = main(["bootstrap", "--data-dir", str(self.data_dir), "--json"])
         self.assertEqual(rc_bootstrap, 0)
         persisted_token = json.loads(buf.getvalue()[buf.getvalue().index("{"):])["token"]

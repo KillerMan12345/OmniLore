@@ -1,7 +1,7 @@
 name: CI
 
 # 完全离线：不依赖任何外部服务、API Key 或 Secret。
-# 目标：G0 门禁 —— 53 个测试 + lint + DCO，并在矩阵中包含 windows-latest 防 CRLF 回归。
+# 目标：G0 门禁 —— 84 个测试 + lint + DCO，并在矩阵中包含 windows-latest 防 CRLF 回归。
 
 on:
   push:
@@ -48,8 +48,12 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: "Run the full offline test suite (53 tests: 19 acceptance + 34 W0 launch)"
+      - name: "Run the full offline test suite (84 tests: 19 acceptance + 34 W0 launch + 31 W2/W3 roadmap)"
         run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: "Guard: honest labelling (README <-> docs/FEATURE_STATUS.md <-> CHANGELOG)"
+        if: matrix.python-version == '3.12'
+        run: python -m unittest tests.test_w2_w3_roadmap -v
 
       - name: "Smoke: zero-key bootstrap + demo must run end-to-end"
         if: matrix.python-version == '3.12'
@@ -146,7 +150,7 @@ jobs:
       - name: ruff check
         run: |
           python -m pip show ruff >/dev/null 2>&1 || python -m pip install ruff>=0.6.0
-          python -m ruff check omnilore tests
+          python -m ruff check omnilore tests tools
           python -m ruff --version
 
       - name: Compile check

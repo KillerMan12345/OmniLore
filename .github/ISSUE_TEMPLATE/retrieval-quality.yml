@@ -1,0 +1,78 @@
+name: 检索质量（召回/排序/越权）
+description: 搜不到、排不对、答案对不上原文 —— 或你看到了不该看到的内容。
+title: "[retrieval-quality] "
+labels: ["retrieval-quality"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > 检索质量是本项目的生命线，我们按**分布**而不是按个案改进，
+        > 所以这里以单选下拉为主。
+        >
+        > ⚠️ **疑似越权（看到不该看到的内容）请直接选对应选项** ——
+        > 会自动打上 `security-triage` 进入安全分流。
+        > 确认可利用的漏洞请**不要**开 Issue，走
+        > [Security Advisory](https://github.com/KillerMan12345/OmniLore/security/advisories)。
+
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: 遇到的问题是？
+      options:
+        - "完全搜不到（召回缺失）"
+        - "搜到了但排名靠后（排序问题）"
+        - "搜到了但答案和原文对不上（依据不符）"
+        - "中文查询命中明显比英文差"
+        - "代码符号 / 表格 / PDF 内容检索不到"
+        - "疑似越权：看到了本不该看到的内容（自动打 security-triage）"
+        - "其他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: retrieval_mode
+    attributes:
+      label: 当时的检索模式是？
+      description: 见返回值的 `retrieval_mode` 字段。
+      options:
+        - "keyword_only（未配 API Key，本地 BM25）"
+        - "hybrid（配了 API Key，向量 + 关键词）"
+        - "不知道（没看返回值）"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: content_type
+    attributes:
+      label: 涉及的内容类型是？
+      options:
+        - "普通中文文档"
+        - "英文文档"
+        - "代码 / 技术文档"
+        - "PDF / 扫描件"
+        - "图片"
+        - "健康 / 体检数据"
+        - "混合内容"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: 复现频率
+      options:
+        - "必现（同一条查询每次都一样）"
+        - "经常（大概一半以上）"
+        - "偶发"
+        - "只出现过一次"
+    validations:
+      required: true
+
+  - type: textarea
+    id: query
+    attributes:
+      label: 查询词与期望（可选）
+      description: |
+        请脱敏后再贴：不要包含真实姓名、token、手机号、身份证号。
+    validations:
+      required: false

@@ -14,8 +14,10 @@ x-defaults: &defaults
 services:
   postgres:
     <<: *defaults
-    # pgvector/pgvector:pg16 已锁定到 pg16 通道的最新确定补丁版本
-    image: pgvector/pgvector:pg16-v0.8.0
+    # tag 命名规则是 `<pgvector版本>-pg<PostgreSQL主版本>`（例如 0.8.0-pg16），
+    # 反过来写（如 pg16-v0.8.0）在 Docker Hub **不存在** —— 曾在 2026-10-24 的真实
+    # 验证中于 pull 阶段报 `not found`，导致容器模式整条路径不可用。改动前请先核对 tag。
+    image: pgvector/pgvector:0.8.0-pg16
     container_name: omnilore-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-omnilore_migrator}
@@ -56,6 +58,11 @@ services:
       OMNILORE_BOOTSTRAP_TOKEN: ${OMNILORE_BOOTSTRAP_TOKEN:-}
       # 可选：遥测开关。v0.3.0-alpha 尚未实现遥测实现，保留显式关闭位。
       OMNILORE_TELEMETRY: ${OMNILORE_TELEMETRY:-0}
+      # R-16 主权开关（笔记主权归用户）：不转发的话，容器里这两个配置**静默无效**。
+      # 留空 = 默认全保护（9 个字段）；`none` = 整体关闭（仅保留身份锚点 doc_id）。
+      OMNILORE_PROTECTED_FRONTMATTER: ${OMNILORE_PROTECTED_FRONTMATTER:-}
+      # 冲突副本隐藏目录（相对 <space>/wiki/），点号开头 = Obsidian 默认忽略。
+      OMNILORE_CONFLICT_DIR: ${OMNILORE_CONFLICT_DIR:-.omnilore/conflicts}
     ports:
       - "8080:8080"
     volumes:
