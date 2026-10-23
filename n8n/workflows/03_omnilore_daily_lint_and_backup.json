@@ -1,0 +1,114 @@
+{
+  "name": "OmniLore 03 - Daily Knowledge Lint, Dashboard Refresh & Verified Backup",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ]
+        }
+      },
+      "id": "node-daily-cron",
+      "name": "Daily Governance Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OMNILORE_INTERNAL_API_URL || 'http://mcp-gateway:8080' }}/internal/v1/lint_and_dashboard",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-OmniLore-Token",
+              "value": "={{ $env.OMNILORE_WORKER_SCOPED_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"space_id\": \"sp_personal_alice\"}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "node-run-lint-dashboard",
+      "name": "Run TTL/Link Lint & Refresh Obsidian Dashboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OMNILORE_INTERNAL_API_URL || 'http://mcp-gateway:8080' }}/internal/v1/backup",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-OmniLore-Token",
+              "value": "={{ $env.OMNILORE_WORKER_SCOPED_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "node-run-backup",
+      "name": "Create SHA-256 Verified Snapshot Backup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        780,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Daily Governance Schedule": {
+      "main": [
+        [
+          {
+            "node": "Run TTL/Link Lint & Refresh Obsidian Dashboard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run TTL/Link Lint & Refresh Obsidian Dashboard": {
+      "main": [
+        [
+          {
+            "node": "Create SHA-256 Verified Snapshot Backup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "omnilore_version": "2.3.0",
+    "security_boundary": "Executes read-only Knowledge Lint and SHA-256 manifest backup."
+  }
+}

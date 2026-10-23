@@ -1,0 +1,92 @@
+# =============================================================================
+# OmniLore v0.3.0-alpha (internal generation: v2.3)
+#
+# 默认启动只包含「首启必需」的 postgres + mcp-gateway。
+# n8n 是可选集成，已移出默认启动：需要时用 `docker compose --profile integrations up -d`。
+#
+# 所有镜像 tag 均已锁定到确定版本，不使用 latest / 浮动 tag。
+# 升级请显式修改下面的版本号，并在 CHANGELOG.md 记录。
+# =============================================================================
+
+x-defaults: &defaults
+  restart: unless-stopped
+
+services:
+  postgres:
+    <<: *defaults
+    # pgvector/pgvector:pg16 已锁定到 pg16 通道的最新确定补丁版本
+    image: pgvector/pgvector:pg16-v0.8.0
+    container_name: omnilore-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-omnilore_migrator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_local_dev_only}
+      POSTGRES_DB: ${POSTGRES_DB:-omnilore}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # 001 仅建表/权限/RLS（无 INSERT）；002 提供最小 space/成员/token 种子数据
+      - ./sql/001_omnilore_schema_and_rls.sql:/docker-entrypoint-initdb.d/001_omnilore_schema_and_rls.sql:ro
+      - ./sql/002_omnilore_bootstrap_seed.sql:/docker-entrypoint-initdb.d/002_omnilore_bootstrap_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-omnilore_migrator} -d ${POSTGRES_DB:-omnilore}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  mcp-gateway:
+    <<: *defaults
+    build: .
+    container_name: omnilore-mcp-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # 必填：PostgreSQL 连接串（本地模式可不填，CLI 走内存引擎）
+      DATABASE_URL: ${DATABASE_URL:-postgresql://omnilore_gateway:${GATEWAY_DB_PASSWORD:-change_me_local_dev_only}@postgres:5432/omnilore}
+      # 必填：数据目录（容器内路径，挂载见 volumes）
+      OMNILORE_DATA_DIR: /data/OmniLore_Data
+      # 可选：留空即自动降级为本地 BM25 / 关键词检索（零密钥可用）
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_REGION: ${DASHSCOPE_REGION:-cn-beijing}
+      # 可选：设为 0 关闭首启自动引导（默认 1 = 开启）
+      OMNILORE_AUTO_BOOTSTRAP: ${OMNILORE_AUTO_BOOTSTRAP:-1}
+      # 可选：显式指定 owner token；不填则由引导流程自动生成并持久化
+      OMNILORE_BOOTSTRAP_TOKEN: ${OMNILORE_BOOTSTRAP_TOKEN:-}
+      # 可选：遥测开关。v0.3.0-alpha 尚未实现遥测实现，保留显式关闭位。
+      OMNILORE_TELEMETRY: ${OMNILORE_TELEMETRY:-0}
+    ports:
+      - "8080:8080"
+    volumes:
+      - vault_data:/data/OmniLore_Data
+    stdin_open: true
+    tty: true
+
+  # ---------------------------------------------------------------------------
+  # 可选集成：n8n 工作流编排
+  # 默认不启动；启用方式：
+  #   docker compose --profile integrations up -d
+  # ---------------------------------------------------------------------------
+  n8n:
+    <<: *defaults
+    image: n8nio/n8n:1.113.0
+    container_name: omnilore-n8n
+    profiles:
+      - integrations
+    depends_on:
+      - mcp-gateway
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_SECURE_COOKIE: "false"
+      OMNILORE_INTERNAL_API_URL: http://mcp-gateway:8080
+      OMNILORE_WORKER_SCOPED_TOKEN: ${OMNILORE_WORKER_SCOPED_TOKEN:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/home/node/workflows:ro
+
+volumes:
+  pgdata:
+  vault_data:
+  n8n_data:

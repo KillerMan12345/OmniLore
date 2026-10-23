@@ -1,0 +1,32 @@
+# -----------------------------------------------------------------------------
+# 行尾规范化：强制仓库内一律 LF（OmniLore 的文档/控制台写入也统一 UTF-8 + LF，
+# 见 omnilore/textio.py 与 CHANGELOG 的 A-3 条目）。
+#
+# 为什么必须有这个文件：本宿主 core.autocrlf=true，若不做显式声明，
+# Windows 上 checkout 会把 .md/.py/.sql/.yml 转成 CRLF，CI 的 windows-latest
+# 门禁之外的本地环境就成了 CRLF 回归的盲区。
+# -----------------------------------------------------------------------------
+* text=auto eol=lf
+
+*.md   text eol=lf
+*.py   text eol=lf
+*.sql  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.cfg  text eol=lf
+*.ini  text eol=lf
+
+# 明确已知的二进制/不可规范化资源，避免被 text 转换破坏
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz  binary
+*.woff binary
+*.woff2 binary
+*.ttf binary

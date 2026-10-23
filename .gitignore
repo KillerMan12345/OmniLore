@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+OmniLore_Data/
+*.staged
+
+# Python 构建与打包产物
+.eggs/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 本地 IDE / Agent 工作区（内含 agent 记忆 MEMORY.md，不得随仓库公开）
+.workbuddy/
+
+# 内部策略与竞品分析文档（2026-10-23 维护者裁定：不随开源仓库公开）
+# 内容含对 RAGFlow / Dify / Obsidian 的竞品象限分析与首发定价/渠道策略，
+# 属内部决策依据，公开无益且可能被断章取义。如需复用请先做脱敏评审。
+deliverables/

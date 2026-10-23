@@ -1,0 +1,41 @@
+OmniLore
+Copyright 2026 OmniLore Contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+
+-------------------------------------------------------------------------------
+第三方依赖声明 (Third-Party Dependencies)
+-------------------------------------------------------------------------------
+本项目依赖的第三方 Python 包（PyYAML、asyncpg、pydantic、pdfplumber、pypdf、
+Pillow）以及可选的容器镜像（pgvector/pgvector、n8nio/n8n）均由各自的版权方
+按其自有许可证分发。本项目不打包也不再分发它们的源码。
+
+-------------------------------------------------------------------------------
+商标政策说明 (Trademark Policy)
+-------------------------------------------------------------------------------
+"OmniLore" 名称与本项目标识不在 Apache-2.0 的授权范围内。Apache-2.0 第 6 条
+明确不授予使用许可方商标、服务标志或产品名称的权利。
+
+除以下被允许的合理惯用做法外，未经书面许可不得以任何暗示官方背书的方式使用该名称：
+  - 在描述软件来源时以文字形式如实引用，例如 "本项目基于 OmniLore 构建"；
+  - 转载本 NOTICE 文件的原始内容；
+  - 在 fork 或衍生版本中以清晰可见的方式标注 "OmniLore 的衍生版本（未经原项目背书）"。
+
+如果希望使用该名称进行产品命名、市场推广或对外合作，请先通过 SECURITY.md 中列出
+的渠道联系项目维护者获取书面授权。
+
+-------------------------------------------------------------------------------
+版本说明 (Version Note)
+-------------------------------------------------------------------------------
+对外发布版本标记为 v0.3.0-alpha（内部代际代号 v2.3，PEP 440 版本号 0.3.0a0）。
+该版本为 alpha 阶段，未达到生产就绪状态，仅供评估、研究与贡献使用。

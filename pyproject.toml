@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=77.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnilore"
+# PEP 440 identifier chosen so setuptools/pip accept it. The externally advertised
+# version is `v0.3.0-alpha` (`__version_display__`); see CHANGELOG.md & docs/DECISIONS.md.
+version = "0.3.0a0"
+description = "OmniLore v0.3.0-alpha: AI-Native Auditable Knowledge Hub (Phase 0 - Phase 3)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "OmniLore Contributors" }]
+keywords = ["knowledge-base", "rag", "mcp", "rls", "obsidian", "pgvector"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: News/Diary",
+]
+dependencies = [
+    "PyYAML>=6.0",
+    "asyncpg>=0.29.0",
+    "pydantic>=2.0.0",
+    "pdfplumber>=0.10.0",
+    "pypdf>=4.0.0",
+    "Pillow>=10.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/KillerMan12345/OmniLore"
+Repository = "https://github.com/KillerMan12345/OmniLore"
+Issues = "https://github.com/KillerMan12345/OmniLore/issues"
+Security = "https://github.com/KillerMan12345/OmniLore/security/advisories"
+
+[project.scripts]
+omnilore = "omnilore.cli:main"
+# Must target the *sync* wrapper: console scripts are called, never awaited, so an
+# `async def` target would only emit "coroutine ... was never awaited" and exit.
+omnilore-mcp = "omnilore.mcp_stdio_server:main_stdio_sync"
+
+[tool.setuptools]
+packages = ["omnilore"]
+
+[tool.ruff]
+# Only the pragmatic, high-signal subset is enforced in CI: real syntax/pyflakes
+# errors plus style errors that are cheap to keep clean. Larger refactors (D, UP035,
+# ANN, ...) are intentionally NOT enabled — see CONTRIBUTING.md Q2 roadmap.
+target-version = "py311"
+line-length = 120
+exclude = ["OmniLore_Data", ".venv", "deliverables", ".git", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

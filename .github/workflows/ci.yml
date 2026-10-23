@@ -1,0 +1,232 @@
+name: CI
+
+# 完全离线：不依赖任何外部服务、API Key 或 Secret。
+# 目标：G0 门禁 —— 53 个测试 + lint + DCO，并在矩阵中包含 windows-latest 防 CRLF 回归。
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI 全程零 API Key：强制走关键词降级路径，确保首次检索不依赖任何云账号。
+  DASHSCOPE_API_KEY: ""
+  PYTHONDONTWRITEBYTECODE: "1"
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: "Run the full offline test suite (53 tests: 19 acceptance + 34 W0 launch)"
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: "Smoke: zero-key bootstrap + demo must run end-to-end"
+        if: matrix.python-version == '3.12'
+        env:
+          OMNILORE_DATA_DIR: ${{ runner.temp }}/OmniLore_Data_CI
+        run: |
+          python -m omnilore bootstrap
+          python -m omnilore demo
+
+      - name: "Smoke: MCP stdio handshake"
+        if: matrix.python-version == '3.12'
+        shell: bash
+        env:
+          OMNILORE_DATA_DIR: ${{ runner.temp }}/OmniLore_Data_CI
+        run: |
+          printf '%s\n%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | python -m omnilore.mcp_stdio_server | tee /dev/stderr | grep -q '"omnilore-mcp-gateway"'
+
+      - name: "Guard: LF-only text writes (CRLF regression guard)"
+        shell: bash
+        run: |
+          python - <<'PY'
+          """AST guard for A-3: no un-canonical `.write_text()` call sites may land.
+
+          `Path.write_text()` without `newline=''` rewrites LF as CRLF on Windows,
+          which desynchronises disk bytes from `documents.file_hash` and breaks the
+          Section 12.3 reconciliation. Parsing the AST (rather than grep) keeps this
+          check immune to the helper docs that legitimately mention the API.
+          """
+          import ast
+          import pathlib
+          import sys
+
+          offenders: list[str] = []
+          for path in sorted(pathlib.Path("omnilore").rglob("*.py")):
+              tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+              for node in ast.walk(tree):
+                  if (
+                      isinstance(node, ast.Call)
+                      and isinstance(node.func, ast.Attribute)
+                      and node.func.attr == "write_text"
+                  ):
+                      has_newline_kw = any(kw.arg == "newline" for kw in node.keywords)
+                      if not has_newline_kw:
+                          offenders.append(
+                              f"{path.as_posix()}:{node.lineno}: "
+                              "use omnilore.textio.write_text_canonical instead"
+                          )
+          if offenders:
+              print("ERROR: found un-canonical .write_text() call sites;")
+              print("\n".join(offenders))
+              sys.exit(1)
+          print("OK: no un-canonical .write_text() call sites in omnilore/.")
+          PY
+
+      - name: "Guard: no forbidden maturity wording in README"
+        shell: bash
+        run: |
+          python - <<'PY'
+          """Hard red line: alpha releases must not claim production-readiness."""
+          import pathlib
+          import re
+          import sys
+
+          banned = ["production-ready", "production ready", "stable release", "企业就绪"]
+          text = pathlib.Path("README.md").read_text(encoding="utf-8")
+          hits = [w for w in banned if re.search(re.escape(w), text, re.IGNORECASE)]
+          if hits:
+              print(f"ERROR: README contains forbidden maturity wording: {hits}")
+              sys.exit(1)
+          print("OK: README keeps alpha-stage wording.")
+          PY
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install linters
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: ruff check
+        run: |
+          python -m pip show ruff >/dev/null 2>&1 || python -m pip install ruff>=0.6.0
+          python -m ruff check omnilore tests
+          python -m ruff --version
+
+      - name: Compile check
+        run: python -m compileall -q omnilore tests
+
+  dco:
+    name: DCO sign-off
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Signed-off-by on every commit in the change set
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse "$BASE_SHA" >/dev/null 2>&1; then
+            echo "无法在本地找到 base commit，尝试 fetch："
+            git fetch origin "$BASE_SHA" --depth=1 || {
+              echo "::warning:: 无法获取 base commit，跳过 DCO 校验"; exit 0; }
+          fi
+          failed=0
+          while read -r sha; do
+            msg=$(git log -1 --format=%B "$sha")
+            if ! printf '%s' "$msg" | grep -qi '^Signed-off-by: .\+ <.\+@.\+>$'; then
+              echo "::error::缺少 DCO 签名：$sha —— $(git log -1 --format=%s "$sha")"
+              echo "        请使用 git commit -s 补签。"
+              failed=1
+            fi
+          done < <(git rev-list "$BASE_SHA".."$HEAD_SHA")
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo "OK: 所有提交均带 Signed-off-by。"
+
+      # Notes on scope, so this gate stays honest instead of noisy:
+      #  * Pull requests  -> validate only the commits in the change set.
+      #  * Normal pushes -> validate every commit in `before..after`.
+      #  * First push of a brand-new branch (`before` is the all-zero SHA) -> there is
+      #    no reliable base, and falling back to `git rev-list <after>` would re-litigate
+      #    every commit that already exists in the repository (e.g. the pre-existing
+      #    initial import, which predates the DCO decision). We therefore validate the
+      #    pushed tip only, and log the reason explicitly. Subsequent pushes on the
+      #    branch then get full range validation.
+      - name: Verify Signed-off-by on push commits
+        if: github.event_name == 'push'
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          ZERO="0000000000000000000000000000000000000000"
+          check_commit() {
+            local sha="$1"
+            if ! git log -1 --format=%B "$sha" | grep -qi '^Signed-off-by: .\+ <.\+@.\+>$'; then
+              echo "::error::缺少 DCO 签名：$sha —— $(git log -1 --format=%s "$sha")"
+              echo "        请使用 git commit -s 补签（批量：git rebase --signoff <base>）。"
+              return 1
+            fi
+            return 0
+          }
+
+          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "$ZERO" ]; then
+            # 首次推送（before 为空/全零）没有可靠的 base，退化成全量 git rev-list 会把
+            # 早于 DCO 决策的历史提交一起判定，导致 job 无意义地红。此处按约定降级为
+            # warning 不阻断；后续 push 仍做全范围严格校验。
+            echo "::warning::首次推送（before 为空/全零）：无可靠 base，DCO 校验降级为非阻断。"
+            echo "        请在首次公开推送前对历史提交补签：git commit --amend -s / git rebase --signoff <base>"
+            echo "        详细规则见 CONTRIBUTING.md。"
+            check_commit "$AFTER_SHA" || echo "::warning::尖端提交 $AFTER_SHA 缺少 Signed-off-by（首次推送，不阻断）。"
+            exit 0
+          fi
+
+          failed=0
+          while read -r sha; do
+            check_commit "$sha" || failed=1
+          done < <(git rev-list "$BEFORE_SHA".."$AFTER_SHA")
+          if [ "$failed" -ne 0 ]; then exit 1; fi
+          echo "OK: 推送范围内的所有提交均带 Signed-off-by。"

@@ -1,0 +1,180 @@
+{
+  "name": "OmniLore 01 - Async File Ingestion & Review Routing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "omnilore-ingest",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook-ingest",
+      "name": "Ingest Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OMNILORE_INTERNAL_API_URL || 'http://mcp-gateway:8080' }}/internal/v1/ingest",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-OmniLore-Token",
+              "value": "={{ $json.headers['x-omnilore-token'] }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "node-call-gateway-ingest",
+      "name": "Call OmniLore Internal Gateway (ModelAdapter & RLS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        500,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.data.task.task_state }}",
+                    "rightValue": "COMMITTED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "COMMITTED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.data.task.task_state }}",
+                    "rightValue": "NEEDS_REVIEW",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "NEEDS_REVIEW"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "node-switch-task-state",
+      "name": "Route by Task State",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        780,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.data) }}",
+        "options": {}
+      },
+      "id": "node-respond-receipt",
+      "name": "Return Standard Task Receipt",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1080,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Ingest Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Call OmniLore Internal Gateway (ModelAdapter & RLS)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call OmniLore Internal Gateway (ModelAdapter & RLS)": {
+      "main": [
+        [
+          {
+            "node": "Route by Task State",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Task State": {
+      "main": [
+        [
+          {
+            "node": "Return Standard Task Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Standard Task Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Return Standard Task Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "meta": {
+    "omnilore_version": "2.3.0",
+    "security_boundary": "Zero provider API keys in n8n; all LLM and DB operations go through OmniLore Gateway with caller token."
+  }
+}
