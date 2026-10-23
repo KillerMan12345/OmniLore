@@ -14,8 +14,8 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS Assets）**为基础�
 > **首屏这句话里的每一条能力，都有证据状态**（不是裸宣称）：
 > **不可变原始证据（SHA-256 CAS）= `Implemented`** ｜
 > **行级安全策略（RLS）策略挂载与跨空间读拦截 = `Tested-real`**
-> （2026-10-24 真实 PostgreSQL 16.15 三条探针 PASS；**自动化集成 CI 尚未接入**，
-> 单次手动验证 ≠ 持续 CI 证据）｜
+> （2026-10-24 真实 PostgreSQL 16.15 三条探针 PASS；**自动化集成 CI 已接入、待首次绿灯**，
+> 在此之前单次手动验证 ≠ 持续 CI 证据）｜
 > **四维权限交集 / Profile 隔离 = `Simulated`**（探针只覆盖 space + category 两维，
 > profile / membership / 组织树继承**未被验证**）｜
 > **混合检索（BM25 + 向量 + 代码符号）= `Simulated`**
@@ -181,7 +181,7 @@ flowchart TD
 | 首启耗时 | 秒级 | 分钟级（需拉镜像） |
 | 外部服务 | 无 | Docker + PostgreSQL |
 | 结构化数据持久化 | 否（进程生命周期） | 是 |
-| RLS 策略执行方式 | 同构内存模拟（`Simulated`） | 真实 PostgreSQL 策略（`Planned` 才可能有 CI 证据 —— 当前**没有**） |
+| RLS 策略执行方式 | 同构内存模拟（`Simulated`） | 真实 PostgreSQL 策略（`Implemented`：`integration-rls` job 已接入，**待首次 CI 绿灯**才算持续证据） |
 | 适用 | 评估、开发、跑 CI | 长期持有、多人/多端共享 |
 
 ---
@@ -248,7 +248,7 @@ omnilore/
 │   ├── PULL_REQUEST_TEMPLATE.md                      # 含 DCO 勾选项
 │   ├── ISSUE_TEMPLATE/                               # 6 套表单，以单选下拉为主（可统计）
 │   └── workflows/
-│       ├── ci.yml                                    # 离线 CI：3.11/3.12 × ubuntu/windows
+│       ├── ci.yml                                    # CI：离线矩阵（3.11/3.12 × ubuntu/windows）+ integration-rls（真实 PG）
 │       └── triage.yml                                # 选项 → 标签自动分流（P0-escape / security-triage）
 ├── docs/
 │   ├── FEATURE_STATUS.md                             # 能力状态矩阵（四态标注 + 验证命令）
@@ -279,12 +279,12 @@ omnilore/
 │   └── mcp_stdio_server.py                           # FastMCP JSON-RPC 2.0 Stdio 服务端
 ├── tools/
 │   └── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
-└── tests/                                            # 端到端验收测试，共 84 个用例（0 skip）
+└── tests/                                            # 端到端验收测试，共 91 个用例（0 skip）
     ├── _platform_support.py                          # 新增：宿主能力探测（symlink → junction 回退）
     ├── test_omnilore_phase0_acceptance.py           # Phase 0/1 专项（安全/RLS/幂等/恢复/模型门禁）10 项
     ├── test_full_omnilore_suite.py                  # Phase 0~3 + Ops 综合验收 9 项
     ├── test_w0_launch.py                             # W0 新增回归（引导/LF/版本/降级/合成正交/归因/权限/漂移/CLI/MCP 入口/文档宣称）34 项
-    └── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）31 项
+    └── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）38 项
 ```
 
 ---
@@ -296,21 +296,23 @@ python -m unittest discover -s tests -p "test_*.py" -v
 # 等价：make verify
 ```
 
-**84 个测试用例**，全部离线运行，不需要数据库或 API Key：
+**91 个测试用例**，全部离线运行，不需要数据库或 API Key：
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---|---|
 | `test_omnilore_phase0_acceptance.py` | 10 项 | Phase 0/1 专项：安全、RLS（跑在内存仿真引擎上，`Simulated`）、幂等、崩溃恢复、模型门禁 |
 | `test_full_omnilore_suite.py` | 9 项 | Phase 0~3 + Ops 综合验收 |
 | `test_w0_launch.py` | 34 项 | **W0 新增**：引导幂等与 token 复用、LF 规范化、版本号一致、零 Key 降级、供应商故障降级、CLI/MCP 路径解析一致、CLI 端到端、MCP stdio 入口握手、`OMNILORE_AUTO_BOOTSTRAP=0` 不废既有 token |
-| `test_w2_w3_roadmap.py` | 31 项 | **W2/W3 新增**：受保护字段白名单可配、冲突副本隐藏目录、README↔状态矩阵↔CHANGELOG 三处一致、威胁模型披露、6 套 Issue 模板可统计 |
+| `test_w2_w3_roadmap.py` | 38 项 | **W2/W3 新增**：受保护字段白名单可配、冲突副本隐藏目录、README↔状态矩阵↔CHANGELOG 三处一致、威胁模型披露、6 套 Issue 模板可统计；**W4（R-08b）新增**：真实 PG 集成 CI 的配置守卫（镜像 tag / 健康检查 / 退出码语义） |
 
-> ⚠️ **这 84 个测试全部跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上。**
+> ⚠️ **这 91 个测试全部跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上。**
 > 它与 PostgreSQL RLS **同构**，但**不是真实 PostgreSQL** —— 所以它们证明的是**逻辑正确性**，
-> 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS **没有 CI 证据**，相关能力一律标注
-> `Simulated` —— **唯一例外**是「真实 PostgreSQL RLS 策略与跨空间读拦截」：它有
-> 2026-10-24 在真实 PG 16.15 上的一次性人工验证（3 探针 PASS），故标 `Tested-real`，
-> 但它**不是 CI 门禁**。详见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 第 6 节。
+> 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS 相关能力一律标注 `Simulated` ——
+> **唯一例外**是「真实 PostgreSQL RLS 策略与跨空间读拦截」：它有 2026-10-24 在真实
+> PG 16.15 上的一次性人工验证（3 探针 PASS），故标 `Tested-real`。
+> **持续证据已交给 CI**：`.github/workflows/ci.yml` 的 `integration-rls` job 每次 push 都会
+> 起一个真实 PG 并重跑同三条探针 —— 但该 job **尚未经过首次真实运行验证**，在它首次绿灯之前，
+> 本页仍以「一次性人工证据」为准。详见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 第 6 节。
 > **我们公开边界，因为我们做安全。**
 
 ### 自己复跑验证
@@ -349,11 +351,11 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 > | `Implemented` | 代码已实现，仓库内有自动化用例覆盖（跑在进程内内存引擎上） |
 > | `Tested-real` | CI 里存在**真实外部依赖**上的证据：真实子进程、真实跨平台文件系统、真实第三方解析库 |
 > | `Simulated` | 只在与 PostgreSQL RLS **同构的内存仿真引擎**上验证；真实 PostgreSQL **没有 CI 证据** |
-> | `Tested-real`（RLS 例外） | 2026-10-24 在真实 PG 16.15 上**人工**跑通三条探针（策略挂载 / 跨空间不可见 / 授权后可见）；**无 CI 门禁**，见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 第 6 节 |
+> | `Tested-real`（RLS 例外） | 2026-10-24 在真实 PG 16.15 上**人工**跑通三条探针（策略挂载 / 跨空间不可见 / 授权后可见）；CI 门禁已接入 `integration-rls` job（**待首次绿灯**），见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 第 6 节 |
 > | `Planned` | 尚未实现，或仅有模板、未经过自动化验证 |
 >
 > **当前统计（三处一致，由测试守护）：**
-> `Implemented` 5 条 ｜ `Tested-real` 7 条 ｜ `Simulated` 12 条 ｜ `Planned` 4 条 —— 合计 **28 条**。
+> `Implemented` 6 条 ｜ `Tested-real` 7 条 ｜ `Simulated` 12 条 ｜ `Planned` 3 条 —— 合计 **28 条**。
 >
 > **测试跑在什么上面（重要）**：本项目的全部测试用例都跑在
 > `omnilore.engine.RLSDatabaseEngine`（**内存仿真引擎**）上 —— 它与 PostgreSQL RLS
@@ -361,14 +363,15 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 > `Simulated`，并在 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 里给出
 > **你可以自己复跑的验证命令**。
 > **唯一例外**是「真实 PostgreSQL RLS 策略与跨空间读拦截」：它有 2026-10-24 在真实
-> PG 16.15 上的**一次性人工**验证（3 探针 PASS），故标 `Tested-real` —— 但**没有 CI 门禁**。信任边界与「防不住什么」见
+> PG 16.15 上的**一次性人工**验证（3 探针 PASS），故标 `Tested-real` —— 持续取证已交给
+> `integration-rls` job，但它**尚未经过首次真实运行验证**，首次绿灯前仍只能算人工证据。信任边界与「防不住什么」见
 > [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)。
 >
 > **我们公开边界，因为我们做安全。**
 
 ### Phase 0 — 安全基座
 
-- **[Tested-real]** **真实 PostgreSQL RLS 策略与跨空间读拦截**：2026-10-24 在真实 PostgreSQL 16.15 上跑 `make verify-rls-pg`，三条探针全部 PASS（7 张核心表 `rowsecurity=true`；未授权时跨空间行不可见；授权后同一行可见）。**自动化集成 CI 待接入**，单次手动验证 ≠ 持续 CI 证据。
+- **[Tested-real]** **真实 PostgreSQL RLS 策略与跨空间读拦截**：2026-10-24 在真实 PostgreSQL 16.15 上跑 `make verify-rls-pg`，三条探针全部 PASS（7 张核心表 `rowsecurity=true`；未授权时跨空间行不可见；授权后同一行可见）。**单次手动验证 ≠ 持续 CI 证据**；持续取证已接入 CI 的 `integration-rls` job，但**待首次绿灯**（见下方 `Implemented` 条目）。
 - **[Simulated]** **四维权限交集**：每次请求强制计算 `Token 范围 ∩ 当前有效 Membership ∩ 空间继承规则 ∩ Profile/Category 规则`。
 - **[Simulated]** **Profile 硬性隔离**：`WORK` Profile 硬性隔离同一空间下的 `02_Life` / `03_Family` / `04_Health_Archive`；`FAMILY` Profile 硬性隔离个人私库与企业空间。
 - **[Simulated]** **撤销即时失效**：Token 撤销与成员移除立即触发进程内缓存主动失效（实测 `< 1ms`，满足 `≤ 5s` SLO）。
@@ -411,12 +414,13 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 - **[Tested-real]** **零密钥降级如实上报**：无 Key 时 `retrieval_mode=keyword_only`、`degraded_reason` 非空，且与合成降级正交上报。
 - **[Tested-real]** **跨平台 LF 规范化**：全部文本读写统一 UTF-8 + LF，由 `windows-latest` 真实文件系统门禁防回归。
 
+- **[Implemented]** **真实 PostgreSQL 集成 CI**：`.github/workflows/ci.yml` 新增独立 job `integration-rls` —— 用 `pgvector/pgvector:0.8.0-pg16` 起一个**干净的真实 PostgreSQL 16**，跑 `tools/verify_rls_pg.py` 的三条探针，并把 exit 2（未验证）/ exit 3（结论为否）**逐码**转成 job 失败（不许 `continue-on-error`，不许当跳过）。**尚未经过首次真实运行验证**，故标 `Implemented` 而非 `Tested-real`；首次绿灯后 RLS 条目才具备持续取证。
+
 ### 尚未实现（Planned）
 
 - **[Planned]** **opt-in 匿名遥测**：决策已接受，实现排期在 Q2（见 [`docs/DECISIONS.md`](docs/DECISIONS.md)）。
 - **[Planned]** **模型 provider 抽象（R-04b）**：`OMNILORE_*_MODEL` 等变量当前**不被代码读取**，属预留位。
 - **[Planned]** **n8n 工作流（3 条）**：JSON 模板已提供，本仓库**未做自动化验证**，需在真实 n8n 实例导入验证。
-- **[Planned]** **真实 PostgreSQL 集成 CI**：现有证据是 2026-10-24 的**一次性人工**验证；接入真实 PG 的自动化 CI 后，RLS 条目才拥有**持续**证据（当前**没有** CI 门禁）。
 
 > 完整功能矩阵 `FR-01`~`FR-19` 与决议 `D-01`~`D-13` 见
 > [`docs/01_Product_Requirements_Document_v2.3.md`](docs/01_Product_Requirements_Document_v2.3.md)。
@@ -477,7 +481,7 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 | [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) | **先看这个**：每条能力的四态标注（`Implemented`/`Tested-real`/`Simulated`/`Planned`）与可复跑的验证命令 |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | 安全/审计：信任边界、**能防什么**、**防不住什么**（含跨系统事务边界） |
 | [`docs/01_Product_Requirements_Document_v2.3.md`](docs/01_Product_Requirements_Document_v2.3.md) | 想快速了解需求范围：`FR-01`~`FR-19` 矩阵与已锁定决议 |
-| [`docs/02_Architecture_and_Engineering_Design_v2.3.md`](docs/02_Architecture_and_Engineering_Design_v2.3.md) | 后端/安全：权限交集、`(space_id, category)` RLS、15 张表、Saga、同步协议（RLS 行为在内存引擎上验证；真实 PG 只有一次性人工证据、**没有 CI**，见 `docs/FEATURE_STATUS.md` 第 6 节） |
+| [`docs/02_Architecture_and_Engineering_Design_v2.3.md`](docs/02_Architecture_and_Engineering_Design_v2.3.md) | 后端/安全：权限交集、`(space_id, category)` RLS、15 张表、Saga、同步协议（RLS 行为只在内存引擎上验证；真实 PG **没有**持续 CI 证据 —— 现有的一次性人工证据与待首次绿灯的 `integration-rls` job 见 `docs/FEATURE_STATUS.md` 第 6 节） |
 | [`docs/03_User_Stories_and_Scenarios_v2.3.md`](docs/03_User_Stories_and_Scenarios_v2.3.md) | 角色化的用户故事与 `Given/When/Then` 验收标准 |
 | [`docs/04_Test_Plan_and_Verification_Report_v2.3.md`](docs/04_Test_Plan_and_Verification_Report_v2.3.md) | QA/审计：追踪矩阵与**内存仿真的边界** |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | 想了解许可证、版本、遥测（`Planned`）、排期四项拍板 |
@@ -520,10 +524,11 @@ git commit -s -m "fix(storage): ..."   # -s 追加 DCO Signed-off-by，必填
 1. **默认数据库是内存引擎（内存仿真）。** `RLSDatabaseEngine` 与 PostgreSQL RLS 策略同构，
    但**不是真实 PostgreSQL**，且进程退出后结构化状态清空；磁盘上的原始资产与 Markdown
    知识页会保留。长期持有请走容器模式。
-2. **真实 PG RLS 没有 CI 证据（只有一次人工验证）。** 84 个测试全部跑在内存仿真引擎上；
+2. **真实 PG RLS 的持续证据还在等首次 CI 绿灯（目前只有一次人工验证）。** 91 个测试全部跑在内存仿真引擎上；
    依赖真实 PG 的能力一律标 `Simulated`。**唯一例外**是「真实 PostgreSQL RLS 策略与跨空间
    读拦截」：2026-10-24 在真实 PG 16.15 上人工跑通 3 条探针（策略挂载 / 跨空间不可见 /
-   授权后可见），故标 `Tested-real` —— 但**没有自动化门禁**，探针也未覆盖 profile 维度、
+   授权后可见），故标 `Tested-real`。`integration-rls` job 已把同一组探针接进 CI，
+   但该 job **尚未经过首次真实运行验证**；探针也未覆盖 profile 维度、
    写侧策略与组织树继承。想自己复跑：`make verify-rls-pg`（需要真实 PG 的**空库**）。
 3. **符号链接断言依赖宿主能力**：优先用真实 symlink，Windows 无特权时回退到目录联接
    （junction）。若宿主两者都造不出来，2 条 AC-S05 断言会被显式 skip —— 那是宿主能力

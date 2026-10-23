@@ -112,10 +112,13 @@ verify-honesty:
 	@$(PY) -m unittest tests.test_w0_launch.TestReadmeClaimAccuracy -v
 
 # ---------------------------------------------------------------------------
-# 真实 PostgreSQL（Planned）—— 唯一需要外部依赖的目标
-# 环境不具备时**必须**失败，绝不假装验证过。
+# 真实 PostgreSQL —— 唯一需要外部依赖的目标
+# 环境不具备时**必须**失败（exit 2「未验证」），绝不假装验证过；
+# 探针跑通但结论为否是 exit 3。CI 的 `integration-rls` job 跑的就是下面这一行 ——
+# 文档、Makefile、CI 三处必须是同一条命令，改一处就要改三处。
 # ---------------------------------------------------------------------------
 verify-rls-pg:
+	@echo ">> $(PY) tools/verify_rls_pg.py（真实 PostgreSQL：exit 0 通过 / 2 未验证 / 3 结论为否）"
 	@$(PY) tools/verify_rls_pg.py
 
 lint:

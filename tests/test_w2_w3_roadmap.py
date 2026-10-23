@@ -12,6 +12,10 @@ OmniLore W2 / W3 路线图回归测试
   **README 全文**（不只是「核心能力」小节）不允许出现无证据口径的能力宣称。
 * **R-10a（贡献入口）** `TestContributionEntryPoints`
   6 套 Issue 模板以单选下拉为主（可统计），升级标签自动打；六条贡献路径确实绕开 `engine.py`。
+* **R-08b（真实 PG 集成 CI）** `TestCiIntegrationConfig`
+  `.github/workflows/ci.yml` 的 `integration-rls` job 在**配置层**被守住：镜像 tag 命名、
+  `pg_isready` 健康检查、不挂 initdb 种子、以及「退出码 2/3 必须让 job 红」的失败语义。
+  本组**只读 YAML 文本**，不执行 docker —— 它证明「配置正确」，不证明「CI 真的会绿」。
 
 为什么这些也要写成测试：本项目的头号风险是「宣称与证据不匹配」。
 靠人肉同步文档与代码必然失败 —— 所以把它变成测试。
@@ -57,6 +61,11 @@ CHANGELOG_PATH: Path = REPO_ROOT / "CHANGELOG.md"
 MATRIX_PATH: Path = REPO_ROOT / "docs" / "FEATURE_STATUS.md"
 THREAT_MODEL_PATH: Path = REPO_ROOT / "docs" / "THREAT_MODEL.md"
 MAKEFILE_PATH: Path = REPO_ROOT / "Makefile"
+CI_WORKFLOW_PATH: Path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+
+# pgvector 官方镜像的 tag 规则：`<pgvector版本>-pg<PG主版本>`（如 `0.8.0-pg16`）。
+# 反过来写（如 `pg16-v0.8.0`）在 Docker Hub 上**不存在**，会让整个 job 卡在 pull 阶段。
+PGVECTOR_IMAGE_TAG_PATTERN: str = r"^\d+\.\d+\.\d+-pg\d+(-[a-z0-9]+)*$"
 
 # 四态徽章是**封闭词表**：不允许出现第五种状态（例如 `Stable` / `Beta`）。
 FOUR_STATES: Tuple[str, ...] = ("Implemented", "Tested-real", "Simulated", "Planned")
@@ -785,8 +794,9 @@ class TestHonestFeatureStatus(unittest.TestCase):
                 f"「{name}」没有被真实 PG 探针覆盖，不得升级（这是标注红线）",
             )
         self.assertEqual(
-            rows.get("真实 PostgreSQL 集成 CI"), "Planned",
-            "自动化集成 CI 尚未接入，不能标成已实现",
+            rows.get("真实 PostgreSQL 集成 CI"), "Implemented",
+            "自动化集成 CI 已接入 Actions 的 integration-rls job，故标 Implemented；"
+            "但首次 CI 绿灯之前不得升 Tested-real —— 配置正确 ≠ 已经跑过（详见矩阵备注）",
         )
 
     def test_verify_rls_pg_refuses_a_non_empty_database(self) -> None:
@@ -932,3 +942,234 @@ class TestContributionEntryPoints(unittest.TestCase):
         )
         self.assertEqual(proc.returncode, 2, f"缺少数据库时应当以 2（未验证）退出：{proc.stdout}")
         self.assertIn("未验证", proc.stdout)
+
+
+class TestCiIntegrationConfig(unittest.TestCase):
+    """R-08b：真实 PostgreSQL 集成 CI 的**配置**守卫。
+
+    只读 `ci.yml` 的 YAML 文本，**不**执行 docker、**不**连数据库 —— 因此它证明的是
+    「配置正确」，不是「CI 真的会绿」。后者只能由首次真实运行回答。
+
+    为什么这类测试值得写：CI 配置是「没人跑就等于没写」的典型地带，而且它的失败方式
+    往往是**假绿**（跳过了却看起来通过），比不跑更糟。下面每条断言都对应一次真实踩过的
+    坑或一条假绿路径：
+
+    * 镜像 tag 写成 `pg16-v0.8.0` → job 在 pull 阶段必挂（Docker Hub 无此 tag）；
+    * 健康检查不带 `-U` / `-d` → PG 未就绪就开跑，探针 flaky；
+    * 把 DDL 脚本挂进 `docker-entrypoint-initdb.d` → 探针发现非空库，exit 2；
+    * `continue-on-error: true` 或吞掉退出码 → 未验证/结论为否都变成绿，纯粹假绿。
+    """
+
+    def setUp(self) -> None:
+        self.raw = _read(CI_WORKFLOW_PATH)
+        self.workflow = yaml.safe_load(self.raw)
+        self.assertIsInstance(self.workflow, dict, "ci.yml 无法解析为映射（YAML 语法已坏）")
+
+    # -- 解析辅助 ----------------------------------------------------------
+    def _job(self) -> Dict[str, object]:
+        """取出 `integration-rls` job，缺失时直接失败（本组其余断言都依赖它）。"""
+        jobs = self.workflow.get("jobs") or {}
+        self.assertIn(
+            "integration-rls", jobs,
+            f"ci.yml 缺少 integration-rls job（现有 job：{sorted(jobs)}）—— "
+            "真实 PG 的 RLS 证据就又没有自动化来源了",
+        )
+        job = jobs["integration-rls"]
+        self.assertIsInstance(job, dict, "integration-rls 不是映射")
+        return job
+
+    def _postgres_service(self) -> Dict[str, object]:
+        """取出 postgres service container 定义。"""
+        services = self._job().get("services") or {}
+        self.assertIn(
+            "postgres", services,
+            "integration-rls 没有 postgres service container —— 那就不是真实 PG 集成",
+        )
+        return services["postgres"]
+
+    def _step_texts(self) -> List[Tuple[str, str]]:
+        """返回 `(step 名称, run 脚本)` 列表，只保留带 `run` 的步骤。"""
+        texts: List[Tuple[str, str]] = []
+        for step in self._job().get("steps") or []:
+            if isinstance(step, dict) and step.get("run"):
+                texts.append((str(step.get("name", "")), str(step["run"])))
+        return texts
+
+    def _probe_step_text(self) -> str:
+        """返回真正执行探针的那一步的脚本正文。
+
+        判别方式是唯一的命令特征 `tools/verify_rls_pg.py` —— 其它步骤不许出现它，
+        否则「探针步骤」的定位会漂移，针对性断言就失去意义。
+        """
+        matches = [run for _name, run in self._step_texts() if "tools/verify_rls_pg.py" in run]
+        self.assertEqual(
+            len(matches), 1,
+            f"应恰好有 1 个步骤执行 tools/verify_rls_pg.py，实际 {len(matches)} 个",
+        )
+        return matches[0]
+
+    @staticmethod
+    def _collect_continue_on_error(node: object) -> List[str]:
+        """递归收集任意层级的 `continue-on-error` 取值（GitHub 允许写在 job / step 两级）。"""
+        found: List[str] = []
+        stack: List[object] = [node]
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                for key, value in current.items():
+                    if str(key) == "continue-on-error":
+                        found.append(str(value))
+                    stack.append(value)
+            elif isinstance(current, list):
+                stack.extend(current)
+        return found
+
+    @staticmethod
+    def _case_branches(probe: str) -> Dict[str, str]:
+        """把 probe 步骤里的 shell `case` 分支切成 `{分支标签: 分支正文}`。
+
+        为什么不能直接对整段脚本做 `assertIn("exit 2")`：分支里的
+        `echo "::error::exit 2 = 未验证..."` 也含有 `exit 2` 这串字符，于是「把真正的
+        `exit 2` 改成 `exit 0`」这种致命变异会被这句提示语蒙混过去（QA 式变异实测如此）。
+        必须按分支切段、逐段断言**语句级**的退出码。
+
+        Args:
+            probe: 探针步骤的 shell 脚本正文。
+
+        Returns:
+            `{标签: 正文}`，标签为 `"0"` / `"2"` / `"3"` / `"*"` 等。
+        """
+        marker = re.compile(r"(?m)^[ \t]*(\d+|\*)\)[ \t]*$")
+        matches = list(marker.finditer(probe))
+        branches: Dict[str, str] = {}
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(probe)
+            branches[match.group(1)] = probe[match.end():end]
+        return branches
+
+    # -- 守卫 --------------------------------------------------------------
+    def test_ci_has_a_real_postgres_integration_job(self) -> None:
+        """`integration-rls` 存在，且真的是「真实 PG + 探针」而不是把脚本空跑一遍。"""
+        job = self._job()
+        self.assertIn("runs-on", job, "integration-rls 没有 runs-on")
+        postgres = self._postgres_service()
+        self.assertIn("5432", str(postgres.get("ports", "")), "postgres service 未映射 5432")
+
+        service_env = postgres.get("env") or {}
+        for key in ("POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"):
+            self.assertIn(key, service_env, f"postgres service 缺少 {key}")
+
+        job_env = job.get("env") or {}
+        self.assertIn(
+            "DATABASE_URL", job_env,
+            "integration-rls 没有导出 DATABASE_URL —— 探针会以 exit 2「未验证」结束",
+        )
+        # 连接串里的库名必须与 service 建出来的库一致，否则探针连的是一个不存在的库
+        self.assertIn(
+            str(service_env["POSTGRES_DB"]), str(job_env["DATABASE_URL"]),
+            "DATABASE_URL 与 service 的 POSTGRES_DB 不一致：探针会连到别的库（或连不上）",
+        )
+        self.assertIn(
+            "tools/verify_rls_pg.py", "".join(run for _name, run in self._step_texts()),
+            "integration-rls 没有任何步骤执行 tools/verify_rls_pg.py",
+        )
+
+    def test_integration_job_pins_a_published_pgvector_image_tag(self) -> None:
+        """镜像 tag 必须符合 `0.8.0-pg16` 这类**真实存在**的命名，且不许浮动。"""
+        image = str(self._postgres_service()["image"])
+        self.assertTrue(image.startswith("pgvector/pgvector:"), f"镜像来源异常：{image}")
+        self.assertNotIn(":latest", image, f"镜像不许浮动 tag：{image}")
+        tag = image.split(":")[-1]
+        self.assertRegex(
+            tag, PGVECTOR_IMAGE_TAG_PATTERN,
+            f"tag {tag!r} 不符合 pgvector 官方命名规则 `<pgvector版本>-pg<PG主版本>`"
+            "（例如 0.8.0-pg16）；写成 pg16-v0.8.0 会在 pull 阶段直接失败",
+        )
+
+    def test_integration_job_never_allows_failure(self) -> None:
+        """整条 job 链路上不允许 `continue-on-error`，探针命令后也不许吞退出码。"""
+        self.assertEqual(
+            self._collect_continue_on_error(self._job()), [],
+            "integration-rls 里出现了 continue-on-error —— 未验证/结论为否都会被伪装成绿",
+        )
+        self.assertNotIn(
+            "continue-on-error", str(self._job()),
+            "integration-rls 的文本里出现了 continue-on-error",
+        )
+        probe = self._probe_step_text()
+        self.assertNotIn(
+            "|| true", probe,
+            "探针命令后接了 `|| true`：任何失败都会被吞掉，job 永远绿（典型假绿）",
+        )
+
+    def test_integration_job_waits_for_a_usable_database(self) -> None:
+        """健康检查必须是带 `-U` / `-d` 的 `pg_isready`，并有足够的重试窗口。"""
+        options = str(self._postgres_service().get("options", ""))
+        self.assertIn(
+            "pg_isready", options,
+            "postgres service 没有用 pg_isready 做健康检查 —— job 可能在 PG 未就绪时开跑",
+        )
+        self.assertIn("-U", options, "pg_isready 未指定 -U：用户名对不上时会被误判为就绪")
+        self.assertIn("-d", options, "pg_isready 未指定 -d：目标库不可用时仍可能报就绪")
+        self.assertIn("--health-retries", options, "健康检查没有重试次数，冷启动时必然 flaky")
+        self.assertIn("--health-start-period", options, "健康检查没有 start-period，镜像初始化会被算作失败")
+
+    def test_integration_job_does_not_pre_seed_the_schema(self) -> None:
+        """不许把 DDL 种子挂进 initdb 钩子 —— 探针要求空库并自己建表。"""
+        dumped = str(self._job())
+        self.assertNotIn(
+            "docker-entrypoint-initdb.d", dumped,
+            "integration-rls 引用了 docker-entrypoint-initdb.d：预建表会让探针以 exit 2 结束",
+        )
+        for rel in ("sql/001", "sql/002"):
+            self.assertNotIn(
+                rel, dumped,
+                f"integration-rls 引用了 {rel}：探针要求**空库**并自己应用 DDL，预挂载会导致假红",
+            )
+
+    def test_probe_exit_codes_are_mapped_to_a_red_job(self) -> None:
+        """0/2/3 三码契约必须在 CI 里被**逐码**处理，且退出码取自 python 而非 tee。"""
+        probe = self._probe_step_text()
+        self.assertIn(
+            "PIPESTATUS", probe,
+            "退出码必须取自 python 进程（PIPESTATUS[0]）；直接用 `$?` 会拿到 tee 的状态，"
+            "脚本失败也会变绿",
+        )
+
+        branches = self._case_branches(probe)
+        for label in ("0", "2", "3"):
+            self.assertIn(label, branches, f"probe 步骤没有 `case` 的 {label}) 分支")
+
+        # 每个分支都必须以**该分支自己的退出码**结束（语句级判定，不看提示语里的字符串）
+        for label in ("0", "2", "3"):
+            self.assertRegex(
+                branches[label], rf"(?m)^[ \t]*exit {label}[ \t]*$",
+                f"{label}) 分支没有以 `exit {label}` 结束 —— 这条路径会让 job 变成错误的颜色",
+            )
+        # 未验证（2）与结论为否（3）必须写明语义，不许含糊成「失败」
+        self.assertIn("未验证", branches["2"], "2) 分支必须写明这是「未验证」而不是通过")
+        self.assertIn("结论为否", branches["3"], "3) 分支必须写明「已验证但结论为否」")
+        # 兜底分支：非 0/2/3 的退出码（脚本崩溃）也必须红
+        self.assertIn("*", branches, "probe 步骤缺少 `*)` 兜底分支：脚本崩溃会被当成通过")
+        self.assertRegex(
+            branches["*"], r"(?m)^[ \t]*exit [1-9][0-9]*[ \t]*$",
+            "*) 兜底分支没有以非零码退出（脚本崩溃会静默变绿）",
+        )
+        # 成功路径也要有实质断言：exit 0 但日志里没有 3 条 [PASS] 同样算假绿
+        self.assertIn("[PASS]", branches["0"], "成功分支未校验探针日志里真的出现了 [PASS] 行")
+
+    def test_workflow_keeps_the_offline_jobs_intact(self) -> None:
+        """新增 job 不许挤掉原有离线门禁：test / lint / dco 必须照旧存在。"""
+        jobs = set((self.workflow.get("jobs") or {}).keys())
+        for name in ("test", "lint", "dco", "integration-rls"):
+            self.assertIn(name, jobs, f"ci.yml 缺少 job：{name}")
+        test_job = self.workflow["jobs"]["test"]
+        matrix = (test_job.get("strategy") or {}).get("matrix") or {}
+        self.assertEqual(matrix.get("os"), ["ubuntu-latest", "windows-latest"],
+                         "test job 的跨平台矩阵被改动了（windows-latest 是防 CRLF 回归的关键）")
+        self.assertEqual(matrix.get("python-version"), ["3.11", "3.12"],
+                         "test job 的 Python 矩阵被改动了")
+        # 新 job 只能新增，不得让离线 job 依赖它
+        for name in ("test", "lint", "dco"):
+            self.assertNotIn("needs", self.workflow["jobs"][name],
+                             f"{name} 不应依赖任何其他 job（尤其不该被 integration-rls 阻塞）")

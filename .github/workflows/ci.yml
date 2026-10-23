@@ -1,7 +1,14 @@
 name: CI
 
-# 完全离线：不依赖任何外部服务、API Key 或 Secret。
-# 目标：G0 门禁 —— 84 个测试 + lint + DCO，并在矩阵中包含 windows-latest 防 CRLF 回归。
+# 门禁分两类，边界写在最前面：
+#  * `test` / `lint` / `dco` —— **完全离线**：不依赖任何外部服务、API Key 或 Secret。
+#  * `integration-rls`（R-08b）—— 唯一需要外部依赖的 job：用 GitHub 提供的 runner +
+#    公共 `pgvector/pgvector` 镜像起一个**真实 PostgreSQL 16**，跑 RLS 探针取证。
+#    它同样**不使用任何 Secret**，但语义上是「失败即红」：探针的 exit 2（未验证）
+#    也必须让 job 失败 —— 否则就是假绿，比不跑更糟。
+#
+# 目标：G0 门禁 —— 90 个离线测试 + lint + DCO + 真实 PG RLS 探针，
+# 并在矩阵中包含 windows-latest 防 CRLF 回归。
 
 on:
   push:
@@ -48,7 +55,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: "Run the full offline test suite (84 tests: 19 acceptance + 34 W0 launch + 31 W2/W3 roadmap)"
+      - name: "Run the full offline test suite (91 tests: 19 acceptance + 34 W0 launch + 38 W2/W3 roadmap + R-08b CI 配置守卫)"
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: "Guard: honest labelling (README <-> docs/FEATURE_STATUS.md <-> CHANGELOG)"
@@ -234,3 +241,149 @@ jobs:
           done < <(git rev-list "$BEFORE_SHA".."$AFTER_SHA")
           if [ "$failed" -ne 0 ]; then exit 1; fi
           echo "OK: 推送范围内的所有提交均带 Signed-off-by。"
+
+  # ===========================================================================
+  # R-08b —— 真实 PostgreSQL RLS 集成取证
+  # ---------------------------------------------------------------------------
+  # 为什么单独一个 job：其余门禁必须「完全离线可跑」，而 RLS 只能在真实 PG 上取证。
+  # 这里用 GitHub 提供的 runner + 公共镜像，**不引入任何 Secret**，也不挂任何
+  # DDL 脚本：tools/verify_rls_pg.py 要求目标库是**空库**并自己应用 sql/001 + sql/002。
+  #
+  # 失败语义（严格按探针的 0/2/3 契约，一条都不许宽恕）：
+  #   0 -> 通过
+  #   2 -> 未验证（环境没准备好：缺 psql / 缺 DATABASE_URL / 目标库非空 / DDL 跑不动）
+  #        —— **job 必须红**。把它当「跳过」就是假绿，比不跑更糟。
+  #   3 -> 已验证但结论为否（RLS 真的没生效）—— **job 必须红**。
+  #   其它 -> 脚本崩了（违约），同样红。
+  # 因此本 job **不写** continue-on-error，也不在探针命令后吞掉退出码。
+  # ===========================================================================
+  integration-rls:
+    name: integration-rls (real PostgreSQL 16 + RLS probes)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        # ⚠️ tag 规则是 `<pgvector版本>-pg<PG主版本>`，即 0.8.0-pg16。
+        # 反过来写（如 pg16-v0.8.0）在 Docker Hub **不存在**，整个 job 会卡在 pull 阶段。
+        # tests/test_w2_w3_roadmap.py::TestCiIntegrationConfig 守着这条命名规则。
+        image: pgvector/pgvector:0.8.0-pg16
+        env:
+          # 用镜像的默认超级用户：探针需要 SET LOCAL ROLE omnilore_gateway，
+          # 而该角色由 sql/001 自己以 NOLOGIN 创建（先建成登录角色会冲突）。
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: omnilore_ci_pg_password
+          POSTGRES_DB: omnilore_verify
+        ports:
+          - 5432:5432
+        # 健康检查必须带 -U 与 -d：不带库名时 pg_isready 可能在目标库不可用时仍报就绪，
+        # job 就会在 PG 还没起来的时候开跑（经典的 flaky 来源）。
+        options: >-
+          --health-cmd "pg_isready -U postgres -d omnilore_verify"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+          --health-start-period 10s
+
+    env:
+      # 与上面 service 的 POSTGRES_* 逐字对应；库名必须指向那个**空库**。
+      DATABASE_URL: postgresql://postgres:omnilore_ci_pg_password@localhost:5432/omnilore_verify
+      OMNILORE_MIGRATOR_DSN: postgresql://postgres:omnilore_ci_pg_password@localhost:5432/omnilore_verify
+      DASHSCOPE_API_KEY: ""
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Ensure the psql client is on PATH
+        run: |
+          set -euo pipefail
+          if ! command -v psql >/dev/null 2>&1; then
+            echo "runner 上没有 psql，安装 postgresql-client"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-client
+          fi
+          psql --version
+
+      - name: Install the package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: "Guard: DATABASE_URL is set and points at the service container"
+        run: |
+          set -euo pipefail
+          : "${DATABASE_URL:?DATABASE_URL 未设置 —— 集成 job 不允许在「没有目标库」的情况下变绿}"
+          case "$DATABASE_URL" in
+            *localhost:5432/omnilore_verify*) echo "OK: DATABASE_URL 指向 service container 的空库 omnilore_verify" ;;
+            *) echo "::error::DATABASE_URL 没有指向 localhost:5432/omnilore_verify：已脱敏打印"
+               echo "        请检查 env 与 service 的 POSTGRES_* 是否一致"
+               exit 1 ;;
+          esac
+
+      - name: "Guard: target database is empty (the probe creates the schema itself)"
+        run: |
+          set -euo pipefail
+          existing="$(psql "$DATABASE_URL" -tA -v ON_ERROR_STOP=1 -c \
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';")"
+          echo "public schema 现有表数：$existing（期望 0）"
+          if [ "$existing" -ne 0 ]; then
+            echo "::error::目标库不是空库（$existing 张表）—— 探针会以 exit 2 停下并报「未验证」。"
+            echo "        集成 job 不应预挂载任何 DDL 脚本：探针要求空库并自己建表。"
+            exit 1
+          fi
+
+      - name: "Real PostgreSQL RLS probes (python tools/verify_rls_pg.py)"
+        run: |
+          # 注意：不能 `set -e`，否则会拿不到退出码；也绝不能吞掉它。
+          set -uo pipefail
+          python tools/verify_rls_pg.py 2>&1 | tee verify_rls_pg.log
+          VERIFY_EXIT="${PIPESTATUS[0]}"
+          echo "VERIFY_EXIT=${VERIFY_EXIT}"
+          case "${VERIFY_EXIT}" in
+            0)
+              pass_count="$(grep -c '^\[PASS\]' verify_rls_pg.log)" || pass_count="0"
+              if [ "${pass_count}" -ne 3 ]; then
+                echo "::error::脚本 exit 0，但日志里只有 ${pass_count} 条 [PASS]（期望 3 条）—— 判定为假绿，必须红。"
+                exit 1
+              fi
+              echo "::notice::真实 PostgreSQL RLS：3 条探针全部 PASS（exit 0）"
+              exit 0
+              ;;
+            2)
+              echo "::error::exit 2 = 未验证（环境不具备）。这不是通过，CI 必须红。"
+              echo "        请看上面的 NOT VERIFIED 说明：缺 psql / DATABASE_URL 为空 / 目标库非空 / DDL 无法应用。"
+              exit 2
+              ;;
+            3)
+              echo "::error::exit 3 = 已在真实 PostgreSQL 上验证，但结论为否：RLS 没有按预期生效。"
+              echo "        这是真实回归信号：请检查 DDL 里的 CREATE POLICY 与 app.* 上下文设置。"
+              exit 3
+              ;;
+            *)
+              echo "::error::非预期退出码 ${VERIFY_EXIT}：verify_rls_pg.py 崩溃了（契约只有 0/2/3）。"
+              exit 1
+              ;;
+          esac
+
+      - name: "Diagnostics (only on failure): dump RLS / policy state"
+        if: failure()
+        run: |
+          # 只在失败时执行：成功路径的日志保持干净，失败时才有足够信息定位。
+          echo "==================== verify_rls_pg.log (tail 80) ===================="
+          tail -n 80 verify_rls_pg.log || echo "(没有日志文件：探针可能根本没启动)"
+          echo "==================== pg_class.relrowsecurity ===================="
+          psql "$DATABASE_URL" -c "SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' ORDER BY 1;" || true
+          echo "==================== pg_policy ===================="
+          psql "$DATABASE_URL" -c "SELECT polname, polrelid::regclass AS tbl, polcmd FROM pg_policy ORDER BY 2, 1;" || true
+          echo "==================== psql 描述 documents 表结构 ===================="
+          psql "$DATABASE_URL" -c "\d+ documents" || true
+          echo "=================================================================="
