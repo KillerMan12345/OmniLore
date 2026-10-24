@@ -19,7 +19,28 @@ from .bootstrap import (
 )
 from .cli import build_parser as cli_build_parser
 from .cli import main as cli_main
-from .dashscope_client import DashScopeHTTPTransport, ModelAdapterConfig, estimate_cost_usd
+from .dashscope_client import (
+    MODEL_ADAPTER_ENV_NAMES,
+    DashScopeHTTPTransport,
+    ModelAdapterConfig,
+    ModelConfigError,
+    estimate_cost_usd,
+)
+from .embedding_provider import (
+    PROVIDER_DASHSCOPE,
+    PROVIDER_NONE,
+    PROVIDER_OPENAI,
+    SUPPORTED_PROVIDERS,
+    DashScopeEmbeddingProvider,
+    DisabledEmbeddingProvider,
+    EmbeddingConfigurationError,
+    EmbeddingProvider,
+    EmbeddingProviderError,
+    LocalDeterministicEmbeddingProvider,
+    OpenAICompatibleEmbeddingProvider,
+    build_embedding_provider,
+    validate_embedding_dimensions,
+)
 from .daemons import ObsidianVaultWatcher, OutboxRecoveryDaemon
 from .engine import (
     ALLOWED_STATE_TRANSITIONS,
@@ -125,6 +146,21 @@ __all__ = [
     "MembershipRecord",
     "ModelAdapter",
     "ModelAdapterConfig",
+    "ModelConfigError",
+    "MODEL_ADAPTER_ENV_NAMES",
+    "EmbeddingConfigurationError",
+    "EmbeddingProvider",
+    "EmbeddingProviderError",
+    "DashScopeEmbeddingProvider",
+    "OpenAICompatibleEmbeddingProvider",
+    "DisabledEmbeddingProvider",
+    "LocalDeterministicEmbeddingProvider",
+    "build_embedding_provider",
+    "validate_embedding_dimensions",
+    "SUPPORTED_PROVIDERS",
+    "PROVIDER_DASHSCOPE",
+    "PROVIDER_OPENAI",
+    "PROVIDER_NONE",
     "ObsidianVaultWatcher",
     "OperationType",
     "OperationsManager",

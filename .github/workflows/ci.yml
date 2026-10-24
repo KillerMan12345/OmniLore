@@ -55,7 +55,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: "Run the full offline test suite (110 tests: 19 acceptance + 34 W0 launch + 57 W2/W3 roadmap + R-05m 证据包导出 + R-08b 策略注释守卫)"
+      - name: "Run the full offline test suite (140 tests: 19 acceptance + 34 W0 launch + 57 W2/W3 roadmap + 30 W6 provider/platform safety guards)"
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: "Guard: honest labelling (README <-> docs/FEATURE_STATUS.md <-> CHANGELOG)"
@@ -135,6 +135,46 @@ jobs:
               sys.exit(1)
           print("OK: README keeps alpha-stage wording.")
           PY
+
+  # ---------------------------------------------------------------------------
+  # R-11b：ARM64 验证。
+  # 为什么要单独一个 job：`ubuntu-latest` 全是 x86_64，也就是说在此之前**没有任何
+  # 证据**表明这套东西在 arm64 上能跑（Apple Silicon / Graviton / 树莓派用户只能赌）。
+  # 这个 job 只跑**离线**测试 + ruff，刻意不碰真实 PostgreSQL —— `integration-rls`
+  # 保持原样（在 arm64 上同时引入「新架构 + 新服务容器」两个变量，出问题分不清是谁的锅）。
+  # 诚实标注：配置正确 ≠ 已经跑过；首次绿灯之前不得宣称「arm64 已验证」。
+  # ---------------------------------------------------------------------------
+  arm64:
+    name: arm64 (py3.12 on ubuntu-24.04-arm)
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: "ARM64: full offline test suite (same 140 tests as the x86 matrix)"
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: "ARM64: ruff check"
+        run: python -m ruff check omnilore tests tools
+
+      - name: "ARM64: zero-key bootstrap + demo smoke"
+        env:
+          OMNILORE_DATA_DIR: ${{ runner.temp }}/OmniLore_Data_CI_arm64
+        run: |
+          python -m omnilore bootstrap --quiet
+          python -m omnilore demo
 
   lint:
     name: lint

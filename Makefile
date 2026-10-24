@@ -17,7 +17,8 @@ RUFF ?= $(PY) -m ruff
 .DEFAULT_GOAL := help
 .PHONY: help verify test verify-rls verify-rls-pg verify-sync verify-paths \
         verify-parsers verify-redaction verify-ops verify-launch verify-mcp \
-        verify-degradation verify-lf verify-search verify-audit verify-honesty lint
+        verify-degradation verify-lf verify-search verify-audit verify-provider \
+        verify-honesty lint
 
 help: ## 列出所有验证入口
 	@echo "OmniLore 验证入口（全部离线，除 verify-rls-pg）"
@@ -35,6 +36,7 @@ help: ## 列出所有验证入口
 	@echo "  make verify-search      检索路径（注意：hybrid 在 CI 里是桩，无真实网络调用）"
 	@echo "  make verify-lf         跨平台 LF 规范化"
 	@echo "  make verify-audit      证据包导出：改一个字节必须 mismatch + 非零退出"
+	@echo "  make verify-provider   向量来源抽象（R-04b）：provider/维度/降级/默认不变"
 	@echo "  make verify-honesty    诚实标注守卫：README <-> 状态矩阵 <-> CHANGELOG"
 	@echo "  make lint              ruff 静态检查"
 
@@ -102,6 +104,17 @@ verify-search:
 verify-lf:
 	@echo ">> $(PY) -m unittest tests.test_w0_launch.TestCanonicalTextIO -v"
 	@$(PY) -m unittest tests.test_w0_launch.TestCanonicalTextIO -v
+
+# ---------------------------------------------------------------------------
+# R-04b：向量来源可替换（dashscope / openai 兼容含 Ollama / none）。
+# 全部用假 HTTP transport，不打真实网络；重点看三条：默认行为不变、维度不一致要响、
+# 降级链没退化（provider 挂了仍要靠 BM25 给出结果）。
+# ---------------------------------------------------------------------------
+verify-provider:
+	@echo ">> 不设任何新变量时必须与抽象前一致（dashscope + 无 key 降级），且本地向量数值钉死"
+	@$(PY) -m unittest tests.test_w6_provider_and_platform.TestDefaultBehaviourInvariance -v
+	@echo ">> provider 选择 / 真实请求体 / 维度守卫 / 降级回归（假端点，无真实网络）"
+	@$(PY) -m unittest tests.test_w6_provider_and_platform -v
 
 # ---------------------------------------------------------------------------
 # 证据包（R-05m）—— 核心断言是「改一个字节就必须 mismatch + 非零退出」。

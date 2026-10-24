@@ -25,7 +25,6 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -36,6 +35,13 @@ import uuid
 import yaml
 
 from .dashscope_client import DashScopeHTTPTransport, ModelAdapterConfig, estimate_cost_usd
+from .embedding_provider import (
+    EmbeddingConfigurationError,
+    EmbeddingProvider,
+    LocalDeterministicEmbeddingProvider,
+    build_embedding_provider,
+    validate_embedding_dimensions,
+)
 from .textio import (
     lexical_tokens,
     read_text_canonical,
@@ -1238,6 +1244,11 @@ class ModelAdapter:
         self._telemetry_sink = telemetry_sink
         self._custom_llm_handler = custom_llm_handler
         self._http = DashScopeHTTPTransport(config)
+        # R-04b：向量来源可替换（dashscope / openai 兼容含 Ollama / none）。
+        # 远程 provider 与本地确定性兜底**同时存在**：前者不可用时立刻走后者，
+        # 这条降级链是 W0/A-6 的契约，抽象化不允许把它弄丢。
+        self.embedding_provider: EmbeddingProvider = build_embedding_provider(config, self._http)
+        self._local_embedding_provider = LocalDeterministicEmbeddingProvider(config.embedding_dimension)
 
     def generate_structured_resilient(
         self,
@@ -1310,18 +1321,22 @@ class ModelAdapter:
 
         Zero-API-key installs silently use the deterministic local embedder, so we
         must report the effective mode to every caller (Open-Source Launch W0 / A-6).
+
+        R-04b：判断依据从「有没有 DASHSCOPE_API_KEY」升级为「**当前 provider 是否可用**」——
+        provider 可以是 DashScope、任意 OpenAI 兼容端点（含本地 Ollama），或显式 `none`。
         """
-        return "hybrid" if self.config.get_api_key() else "keyword_only"
+        return "hybrid" if self.embedding_provider.is_available() else "keyword_only"
 
     @property
     def degraded_reason(self) -> str:
-        """Human-readable explanation when running degraded; empty string when healthy."""
-        if self.config.get_api_key():
+        """Human-readable explanation when running degraded; empty string when healthy.
+
+        文案由 provider 自己给出：默认 DashScope 无 key 的那句话与抽象之前**逐字一致**
+        （README 与测试都引用它），只有换了 provider 才会出现新的说明。
+        """
+        if self.embedding_provider.is_available():
             return ""
-        return (
-            f"未配置 {self.config.api_key_env_var}，向量召回不可用，"
-            "已自动降级为本地 BM25 / 关键词（keyword_only）检索"
-        )
+        return self.embedding_provider.unavailable_reason()
 
     def _record_telemetry(
         self,
@@ -1583,61 +1598,48 @@ class ModelAdapter:
             }
         return {}
 
-    def embed_texts(self, texts: List[str], *, task_id: Optional[str] = None, space_id: Optional[str] = None) -> List[List[float]]:
-        api_key = self.config.get_api_key()
-        if api_key and self._custom_llm_handler is None:
-            url = f"{self.config.api_endpoint.rstrip('/')}/embeddings"
-            resp = self._http.post_json(
-                url,
-                {
-                    "model": self.config.embedding_model,
-                    "input": texts,
-                    "dimensions": self.config.embedding_dimension,
-                },
-                api_key,
+    def embed_texts(self, texts: List[str], *, task_id: Optional[str] = None,
+                    space_id: Optional[str] = None) -> List[List[float]]:
+        """把文本转成向量：优先用已配置的 provider，不可用则走本地确定性兜底（R-04b）。
+
+        三条约定（抽象化之后仍必须成立）：
+          1. provider 可用 → 调远程；返回维度与 `OMNILORE_EMBEDDING_DIM` 不一致时
+             **抛** :class:`EmbeddingConfigurationError`，不截断不补零（错误相似度更危险）；
+          2. provider 不可用（无 key / 本地端点未配 / `none`）→ 本地确定性向量，
+             调用方通过 `retrieval_mode` 与 `degraded_reason` 得知降级；
+          3. 网络/鉴权/超时异常**照常抛出**，由 `search_knowledge` 那条降级链处理
+             （保持 W0/A-6 的「不要因为 provider 挂了就整体失败」）。
+        """
+        # `_custom_llm_handler` 存在时（测试 / 嵌入方注入）沿用旧语义：不打扰外部服务。
+        if self.embedding_provider.is_available() and self._custom_llm_handler is None:
+            vectors = self.embedding_provider.embed(texts)
+            validate_embedding_dimensions(
+                vectors,
+                self.config.embedding_dimension,
+                provider=self.embedding_provider.name,
+                model_id=self.embedding_provider.model_id,
             )
-            vectors = [item["embedding"] for item in resp["data"]]
             self._record_telemetry(
                 task_id=task_id,
                 doc_id=None,
                 space_id=space_id,
-                model_id=self.config.embedding_model,
+                model_id=self.embedding_provider.model_id,
                 task_type="EMBEDDING",
-                input_tokens=sum(len(t) // 2 + 1 for t in texts),
+                input_tokens=sum(len(one) // 2 + 1 for one in texts),
                 output_tokens=0,
                 latency_ms=10,
                 status="SUCCESS",
             )
             return vectors
 
-        dim = self.config.embedding_dimension
-        vectors = []
-        for text in texts:
-            vec = [0.0] * dim
-            tokens = re.findall(r"[\w\u4e00-\u9fa5]+", text.lower())
-            if not tokens:
-                vec[0] = 1.0
-                vectors.append(vec)
-                continue
-            for tok in tokens:
-                subtokens = [tok]
-                if any("\u4e00" <= ch <= "\u9fa5" for ch in tok) and len(tok) > 1:
-                    subtokens.extend(tok[i : i + 2] for i in range(len(tok) - 1))
-                for st in subtokens:
-                    h = int(hashlib.md5(st.encode("utf-8")).hexdigest(), 16)
-                    idx = h % dim
-                    sign = 1.0 if ((h >> 16) & 1) == 0 else -1.0
-                    vec[idx] += sign
-            norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-            vectors.append([round(v / norm, 6) for v in vec])
-
+        vectors = self._local_embedding_provider.embed(texts)
         self._record_telemetry(
             task_id=task_id,
             doc_id=None,
             space_id=space_id,
             model_id=self.config.embedding_model,
             task_type="EMBEDDING",
-            input_tokens=sum(len(t) // 2 + 1 for t in texts),
+            input_tokens=sum(len(one) // 2 + 1 for one in texts),
             output_tokens=0,
             latency_ms=2,
             status="SUCCESS",
@@ -2414,6 +2416,11 @@ class OmniLoreEngine:
                 q_vec = self.model_adapter.embed_texts(
                     [query], space_id=next(iter(scope.read_spaces))
                 )[0]
+            except EmbeddingConfigurationError:
+                # 配置错（典型：OMNILORE_EMBEDDING_DIM 与 provider 实际维度不符）**必须响亮失败**。
+                # 若在这里降级成 keyword_only，用户会以为「向量检索一直好好的」，
+                # 而索引里其实已经按错误维度写进去了 —— 那是最坏的一种静默损坏。
+                raise
             except _RESPONSE_SHAPE_ERRORS as exc:
                 # 与下方 generate_structured_resilient 保持同一套归因（QA P2-B）：
                 # 响应拿到了但读不出来，是我们自己的解析假设错误，不是供应商故障。

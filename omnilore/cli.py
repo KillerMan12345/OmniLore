@@ -37,6 +37,8 @@ from .bootstrap import (
     render_mcp_config_snippet,
     render_sovereignty_notice,
 )
+from .dashscope_client import ModelConfigError
+from .embedding_provider import EmbeddingConfigurationError
 from .engine import OmniLoreEngine, OmniLoreMCPGateway, OmniLoreError
 from .pathutil import resolve_data_dir
 
@@ -421,6 +423,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return int(runner(args))
     except OmniLoreError as exc:
         sys.stderr.write(f"[omnilore] {exc.code}: {exc.message}\n")
+        return EXIT_ERROR
+    except (ModelConfigError, EmbeddingConfigurationError) as exc:
+        # 配置错**不是**「未预期的错误」：把它归到「配置错误」并原样给出可执行信息，
+        # 否则用户会去翻代码而不是改环境变量。
+        sys.stderr.write(f"[omnilore] CONFIG_ERROR: {exc}\n")
         return EXIT_ERROR
     except KeyboardInterrupt:  # pragma: no cover - interactive interruption
         sys.stderr.write("\n[omnilore] 已取消\n")

@@ -63,6 +63,16 @@ services:
       OMNILORE_PROTECTED_FRONTMATTER: ${OMNILORE_PROTECTED_FRONTMATTER:-}
       # 冲突副本隐藏目录（相对 <space>/wiki/），点号开头 = Obsidian 默认忽略。
       OMNILORE_CONFLICT_DIR: ${OMNILORE_CONFLICT_DIR:-.omnilore/conflicts}
+      # R-04b 向量来源：不转发这 6 项的话，容器里配 provider/模型/维度**静默无效**。
+      # 注意 `http://localhost:11434` 在容器里指容器自己；连宿主机的 Ollama 请用
+      # `http://host.docker.internal:11434/v1`（Linux 需 extra_hosts）。
+      OMNILORE_EMBEDDING_PROVIDER: ${OMNILORE_EMBEDDING_PROVIDER:-dashscope}
+      OMNILORE_EMBEDDING_BASE_URL: ${OMNILORE_EMBEDDING_BASE_URL:-}
+      OMNILORE_EMBEDDING_API_KEY: ${OMNILORE_EMBEDDING_API_KEY:-}
+      OMNILORE_EMBEDDING_MODEL: ${OMNILORE_EMBEDDING_MODEL:-text-embedding-v4}
+      OMNILORE_EMBEDDING_DIM: ${OMNILORE_EMBEDDING_DIM:-1024}
+      OMNILORE_PRIMARY_MODEL: ${OMNILORE_PRIMARY_MODEL:-qwen3.8-flash}
+      OMNILORE_ESCALATED_MODEL: ${OMNILORE_ESCALATED_MODEL:-qwen3.8-max}
     ports:
       - "8080:8080"
     volumes:

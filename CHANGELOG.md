@@ -48,7 +48,7 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **R-13 能力状态矩阵（四态标注）**：新增 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)，
   README 里的**每一条能力**都标注 `Implemented` / `Tested-real` / `Simulated` / `Planned`
   四态之一，逐条对应，并由测试守护「README ↔ 矩阵 ↔ CHANGELOG 三处一致」。
-  当前 **29 条**能力标注：`Implemented` 6 条、`Tested-real` 8 条、`Simulated` 12 条、`Planned` 3 条。
+  当前 **31 条**能力标注：`Implemented` 9 条、`Tested-real` 8 条、`Simulated` 12 条、`Planned` 2 条。
   ⚠️ 其中「混合检索（BM25 + 向量 + 代码符号）」标 `Simulated` —— `hybrid`（1024 维向量）
   路径在 CI 里是 monkeypatch 桩（无真实网络调用），只有 `keyword_only` 真实执行。
 - **R-13 威胁模型公开页**：新增 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)，
@@ -110,6 +110,37 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   **只加注释、不改逻辑**：策略语句摘要被冻结在测试里，改动逻辑会让
   `TestRlsPolicyComments` 直接变红，提醒先重跑真实 PG 探针再更新证据。
 
+**向量来源可替换（R-04b）与平台一致性（R-11b）**
+
+- **R-04b `EmbeddingProvider` 抽象**：向量来源不再绑死阿里云百炼。
+  - `OMNILORE_EMBEDDING_PROVIDER`：`dashscope`（默认，行为与抽象前**逐字一致**）/
+    `openai`（任意 OpenAI 兼容端点 —— OpenAI、Azure OpenAI、**Ollama**、vLLM、LM Studio、
+    硅基流动）/ `none`（显式只用 BM25，`degraded_reason` 会说明这是配置选择而非故障）。
+  - `OMNILORE_EMBEDDING_BASE_URL` 指向自建端点；**本地回环地址（localhost / 127.0.0.1 /
+    host.docker.internal）不需要 API Key**（Ollama 开箱可用）。鉴权顺序：
+    `OMNILORE_EMBEDDING_API_KEY` → `OPENAI_API_KEY` → 本地端点免鉴权。
+  - **四个曾经的「预留、不读取」变量现已真正生效**：`OMNILORE_PRIMARY_MODEL` /
+    `OMNILORE_ESCALATED_MODEL`（进入 chat 请求体的 `model`）、`OMNILORE_EMBEDDING_MODEL` /
+    `OMNILORE_EMBEDDING_DIM`（进入 embeddings 请求体）。`.env.example` 里那段「预留、未读取」
+    的说明已删除；`omnilore bootstrap` 会回显**实际生效**的 provider / 模型 / 维度 / 是否降级，
+    拼错的变量名仍会被点名。
+  - **维度不一致必须响亮失败**：配置维度与 provider 实际返回不一致时抛
+    `EmbeddingConfigurationError` 并给出该改哪个变量，**绝不截断/补零**（那会静默产出错误相似度）。
+  - **降级链零退化**：provider 未配置 / 401 / 超时 / 断网 → 本次请求降级 `keyword_only`，
+    `degraded_reason` 如实上报，检索结果仍由 BM25 给出；配置错（维度/provider 名）不属于
+    「供应商故障」，会被单独归因为配置错误。
+  - 证据边界：用例用 `monkeypatch` 的假 HTTP 端点验证请求体与维度，**没有对真实 OpenAI /
+    Ollama 端点发起过请求**，因此标 `Implemented`，不标 `Tested-real`。
+- **R-11b 统一数据目录**：复核了数据目录的解析路径 —— CLI、MCP 服务端、运行时索引、
+  证据包输出、引导状态全部基于 `resolve_data_dir` 的同一个根；新增静态守卫禁止任何模块
+  自己调用 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR`。
+- **R-11b ARM64 验证**：`.github/workflows/ci.yml` 新增独立 `arm64` job
+  （`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner），跑同一套离线用例 + `ruff` + 冒烟；
+  `integration-rls` **刻意保留在 x86**（不在新架构上再叠 service container 这个变量）。
+  ⚠️ 标注口径：该 job **尚未经过首次真实运行**，故为 `Implemented` 而非 `Tested-real`。
+- **R-11b README 支持架构声明**：新增「支持架构」小节，写明 x86_64（CI 真实执行）与
+  arm64（CI 配置已就位、待首次绿灯）各自的验证方式。
+
 **CI 与测试**
 
 - **R-08b 真实 PostgreSQL RLS 集成 CI**：`.github/workflows/ci.yml` 新增独立 job
@@ -128,13 +159,14 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   配套 7 项配置守卫（`TestCiIntegrationConfig`，只读 YAML、不执行 docker）分别防：
   镜像 tag 写成不存在的 `pg16-v0.8.0`、健康检查漏 `-U`/`-d`、把 DDL 预挂进 initdb 钩子
   导致探针 `exit 2`、`continue-on-error`／吞退出码造成的假绿、以及新 job 挤掉原有离线矩阵。
-- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 110 个测试 +
+- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 140 个测试 +
   ruff + DCO 校验 + 静态红线守卫，全程不使用任何 Secret；**另有一个独立的 `integration-rls`
   job 需要真实 PostgreSQL service container**（见上），它是全仓唯一需要外部服务的门禁，
   同样不使用任何 Secret。
-- **测试套件**：110 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、34 项首发专项、
+- **测试套件**：140 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、34 项首发专项、
   57 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
-  证据包导出与篡改测试 / 21 条 RLS 策略注释守卫）。
+  证据包导出与篡改测试 / 21 条 RLS 策略注释守卫）、30 项 W6 专项
+  （provider 抽象 / 四个环境变量真生效 / 维度守卫 / 降级回归 / 统一数据目录 / arm64 配置）。
   全部跑在 `RLSDatabaseEngine` **内存仿真引擎**上，与 PostgreSQL RLS 同构但**不是真实 PostgreSQL**。
 
 ### Changed（变更）

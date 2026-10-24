@@ -20,7 +20,7 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS Assets）**为基础�
 > profile / membership / 组织树继承**未被验证**）｜
 > **混合检索（BM25 + 向量 + 代码符号）= `Simulated`**
 > —— 其中 `hybrid` 路径在 CI 里是 monkeypatch 桩，**没有任何一次真实网络调用**。
-> 完整 29 条标注见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)（真实 PG 证据记录见其第 6 节）。
+> 完整 31 条标注见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)（真实 PG 证据记录见其第 6 节）。
 
 核心价值不是「把文件塞进向量库」，而是把分散资料变成**有来源、有状态、有版本、有权限、有纠错路径**的资产。
 
@@ -87,7 +87,7 @@ OmniLore bootstrap 完成
   默认空间      : sp_bootstrap_personal
   Owner user_id : 00000000-0000-4000-8000-000000000001
   检索模式      : keyword_only
-  降级说明      : 未配置 DASHSCOPE_API_KEY，自动降级为本地 BM25/关键词检索（零密钥可用）
+  降级说明      : 未配置 DASHSCOPE_API_KEY，向量召回不可用，已自动降级为本地 BM25 / 关键词（keyword_only）检索
 
   Owner Token   : tok__UVvbCICPCl0YUXeblmqr7wFDwYDZfJdNmHDH01hOB0  （新签发）
   Token 已持久化: /home/you/OmniLore_Data/ops/bootstrap.json
@@ -109,7 +109,7 @@ OmniLore demo：投一份文档，再搜到它（零 API Key）
   数据目录  : /home/you/OmniLore_Data
   目标空间  : sp_bootstrap_personal
   检索模式  : keyword_only
-  降级说明  : 未配置 DASHSCOPE_API_KEY，自动降级为本地 BM25/关键词检索（零密钥可用）
+  降级说明  : 未配置 DASHSCOPE_API_KEY，向量召回不可用，已自动降级为本地 BM25 / 关键词（keyword_only）检索
 
 [1/3] 收录文档：omnilore_welcome_note.md
       任务状态      : COMMITTED
@@ -284,7 +284,9 @@ omnilore/
 │   ├── textio.py                                     # 新增：跨平台规范 LF 文本 I/O
 │   ├── engine.py                                     # 核心引擎（约 3200 行，贡献请看 CONTRIBUTING）
 │   ├── pg_repository.py                              # asyncpg 参数化 SQL 仓储层
-│   ├── dashscope_client.py                           # 百炼 HTTP 适配层
+│   ├── dashscope_client.py                           # 百炼 HTTP 适配层 + 模型配置（读 OMNILORE_* 环境变量）
+│   ├── embedding_provider.py                         # **R-04b** 向量来源抽象（dashscope / openai 兼容 / none）
+│   ├── runtime_index.py                              # **R-05m** 运行时索引（audit-bundle 跨进程的派生物）
 │   ├── parsers.py                                    # 多格式解析器（纯函数，好入手）
 │   ├── ops_manager.py                                # 备份/恢复/索引重建/一致性对账
 │   ├── daemons.py                                    # Outbox 恢复与 Obsidian 监听守护
@@ -293,12 +295,13 @@ omnilore/
 ├── tools/
 │   ├── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
 │   └── verify_audit_bundle.py                        # 证据包探针：改 1 字节必须 mismatch + exit 3
-└── tests/                                            # 端到端验收测试，共 110 个用例（0 skip）
+└── tests/                                            # 端到端验收测试，共 140 个用例（0 skip）
     ├── _platform_support.py                          # 新增：宿主能力探测（symlink → junction 回退）
     ├── test_omnilore_phase0_acceptance.py           # Phase 0/1 专项（安全/RLS/幂等/恢复/模型门禁）10 项
     ├── test_full_omnilore_suite.py                  # Phase 0~3 + Ops 综合验收 9 项
     ├── test_w0_launch.py                             # W0 新增回归（引导/LF/版本/降级/合成正交/归因/权限/漂移/CLI/MCP 入口/文档宣称）34 项
-    └── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）+ R-05m（证据包导出）/ R-08b 补课（21 条策略注释）+ 跨进程导出 57 项
+    ├── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）+ R-05m（证据包导出）/ R-08b 补课（21 条策略注释）+ 跨进程导出 57 项
+    └── test_w6_provider_and_platform.py             # W6 新增：R-04b 向量来源抽象 / 四个环境变量真的生效 / 维度守卫 / 降级回归；R-11b 统一数据目录 + arm64 CI 守卫 30 项
 ```
 
 ---
@@ -310,16 +313,17 @@ python -m unittest discover -s tests -p "test_*.py" -v
 # 等价：make verify
 ```
 
-**110 个测试用例**，全部离线运行，不需要数据库或 API Key：
+**140 个测试用例**，全部离线运行，不需要数据库或 API Key：
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---|---|
 | `test_omnilore_phase0_acceptance.py` | 10 项 | Phase 0/1 专项：安全、RLS（跑在内存仿真引擎上，`Simulated`）、幂等、崩溃恢复、模型门禁 |
 | `test_full_omnilore_suite.py` | 9 项 | Phase 0~3 + Ops 综合验收 |
 | `test_w0_launch.py` | 34 项 | **W0 新增**：引导幂等与 token 复用、LF 规范化、版本号一致、零 Key 降级、供应商故障降级、CLI/MCP 路径解析一致、CLI 端到端、MCP stdio 入口握手、`OMNILORE_AUTO_BOOTSTRAP=0` 不废既有 token |
-| `test_w2_w3_roadmap.py` | 57 项 | **W2/W3 新增**：受保护字段白名单可配、冲突副本隐藏目录、README↔状态矩阵↔CHANGELOG 三处一致、威胁模型披露、6 套 Issue 模板可统计；**W4（R-08b）新增**：真实 PG 集成 CI 的配置守卫（镜像 tag / 健康检查 / 退出码语义） |
+| `test_w2_w3_roadmap.py` | 57 项 | **W5（R-05m）新增**：证据包字段完整性、篡改 1 字节 → mismatch + exit 3、缺失资产、跨进程导出、21 条 RLS 策略注释守卫（证据口径：`Tested-real` / `Implemented`，见状态矩阵） |
+| `test_w6_provider_and_platform.py` | 30 项 | **W6（R-04b/R-11b）新增**：provider 抽象（默认仍是 DashScope）、OpenAI 兼容端点（含 Ollama 风格本地地址）请求体、`none` 显式关闭、provider 名写错响亮失败、四个环境变量进入真实请求体、维度不一致抛错（不截断）、provider 故障降级 BM25、本地向量数值冻结点、统一数据目录静态守卫、arm64 CI 配置守卫（证据口径：`Implemented`，见状态矩阵） | **W2/W3 新增**：受保护字段白名单可配、冲突副本隐藏目录、README↔状态矩阵↔CHANGELOG 三处一致、威胁模型披露、6 套 Issue 模板可统计；**W4（R-08b）新增**：真实 PG 集成 CI 的配置守卫（镜像 tag / 健康检查 / 退出码语义） |
 
-> ⚠️ **这 110 个测试全部跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上。**
+> ⚠️ **这 140 个测试全部跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上。**
 > 它与 PostgreSQL RLS **同构**，但**不是真实 PostgreSQL** —— 所以它们证明的是**逻辑正确性**，
 > 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS 相关能力一律标注 `Simulated` ——
 > **唯一例外**是「真实 PostgreSQL RLS 策略与跨空间读拦截」：它有 2026-10-24 在真实
@@ -328,6 +332,18 @@ python -m unittest discover -s tests -p "test_*.py" -v
 > 起一个真实 PG 并重跑同三条探针 —— 但该 job **尚未经过首次真实运行验证**，在它首次绿灯之前，
 > 本页仍以「一次性人工证据」为准。详见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 第 6 节。
 > **我们公开边界，因为我们做安全。**
+
+### 支持架构
+
+OmniLore 支持 **x86_64 与 arm64** 两种 CPU 架构，验证方式不同，如实写在这里：
+
+| 架构 | 状态 | 验证方式 |
+|---|---|---|
+| `x86_64`（linux / windows / macOS Intel） | `Tested-real` | CI 离线矩阵 `ubuntu-latest` × `windows-latest` × Python 3.11/3.12，140 个用例真实执行；另有 `windows-latest` 的 LF 门禁 |
+| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Implemented` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 140 个离线用例** + `ruff` + bootstrap/demo 冒烟。**配置已就位、尚未经过首次真实运行** —— 首次绿灯前不宣称「arm64 已验证」 |
+
+> 为什么 arm64 单独一个 job 而不是并进矩阵：`integration-rls` 刻意留在 x86（真实 PostgreSQL
+> service container）。在 arm64 上同时引入「新架构 + 新服务容器」两个变量，一旦红了分不清是谁的锅。
 
 ### 自己复跑验证
 
@@ -370,7 +386,7 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 > | `Planned` | 尚未实现，或仅有模板、未经过自动化验证 |
 >
 > **当前统计（三处一致，由测试守护）：**
-> `Implemented` 6 条 ｜ `Tested-real` 8 条 ｜ `Simulated` 12 条 ｜ `Planned` 3 条 —— 合计 **29 条**。
+> `Implemented` 9 条 ｜ `Tested-real` 8 条 ｜ `Simulated` 12 条 ｜ `Planned` 2 条 —— 合计 **31 条**。
 >
 > **测试跑在什么上面（重要）**：本项目的全部测试用例都跑在
 > `omnilore.engine.RLSDatabaseEngine`（**内存仿真引擎**）上 —— 它与 PostgreSQL RLS
@@ -430,12 +446,14 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 - **[Tested-real]** **零密钥降级如实上报**：无 Key 时 `retrieval_mode=keyword_only`、`degraded_reason` 非空，且与合成降级正交上报。
 - **[Tested-real]** **跨平台 LF 规范化**：全部文本读写统一 UTF-8 + LF，由 `windows-latest` 真实文件系统门禁防回归。
 
+- **[Implemented]** **模型 provider 抽象（R-04b）**：向量来源不再绑死阿里云 —— `OMNILORE_EMBEDDING_PROVIDER` 可选 `dashscope`（默认，行为与之前完全一致）/ `openai`（**任意 OpenAI 兼容端点**：OpenAI、Azure、**Ollama**、vLLM、LM Studio、硅基流动）/ `none`（显式只用 BM25）；`OMNILORE_EMBEDDING_BASE_URL` 指向自建端点，本地回环地址**不需要 API Key**。四个曾经的「预留、不读取」变量（`OMNILORE_PRIMARY_MODEL` / `OMNILORE_ESCALATED_MODEL` / `OMNILORE_EMBEDDING_MODEL` / `OMNILORE_EMBEDDING_DIM`）**现已真正生效**，且 `omnilore bootstrap` 会回显实际生效的 provider/模型/维度。维度配错会**响亮报错**而不是截断补零。**证据边界**：用例用 `monkeypatch` 的假 HTTP 端点验证请求体与维度，**没有对真实 OpenAI / Ollama 端点做过验证**，故标 `Implemented` 而非 `Tested-real`。
+- **[Implemented]** **ARM64 架构验证（R-11b）**：CI 新增独立 `arm64` job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner），跑**同一套离线测试** + `ruff` + bootstrap/demo 冒烟；`integration-rls` 刻意留在 x86（不在新架构上再叠服务容器这个变量）。**配置已就位、但尚未经过首次真实运行**，故标 `Implemented`；首次绿灯后才有持续证据。
+- **[Implemented]** **统一数据目录解析（R-11b）**：数据目录只有一个解析入口 `omnilore.pathutil.resolve_data_dir`（CLI / MCP 服务端 / 证据包 / 运行时索引全部基于同一根），`ops/index`、`ops/bootstrap.json`、`ops/audit_bundles` 都在同一棵树下；由静态守卫禁止任何模块自己 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR`。
 - **[Implemented]** **真实 PostgreSQL 集成 CI**：`.github/workflows/ci.yml` 新增独立 job `integration-rls` —— 用 `pgvector/pgvector:0.8.0-pg16` 起一个**干净的真实 PostgreSQL 16**，跑 `tools/verify_rls_pg.py` 的三条探针，并把 exit 2（未验证）/ exit 3（结论为否）**逐码**转成 job 失败（不许 `continue-on-error`，不许当跳过）。**尚未经过首次真实运行验证**，故标 `Implemented` 而非 `Tested-real`；首次绿灯后 RLS 条目才具备持续取证。
 
 ### 尚未实现（Planned）
 
 - **[Planned]** **opt-in 匿名遥测**：决策已接受，实现排期在 Q2（见 [`docs/DECISIONS.md`](docs/DECISIONS.md)）。
-- **[Planned]** **模型 provider 抽象（R-04b）**：`OMNILORE_*_MODEL` 等变量当前**不被代码读取**，属预留位。
 - **[Planned]** **n8n 工作流（3 条）**：JSON 模板已提供，本仓库**未做自动化验证**，需在真实 n8n 实例导入验证。
 
 > 完整功能矩阵 `FR-01`~`FR-19` 与决议 `D-01`~`D-13` 见
@@ -483,6 +501,9 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 | `OMNILORE_BOOTSTRAP_TOKEN` | 可选 | 显式指定 owner token |
 | `OMNILORE_AUTO_BOOTSTRAP` | 可选 | `0` 关闭**自动创建**（默认开）。只影响「尚无身份时是否新建」；已存在的 `ops/bootstrap.json` 仍会被加载，既有 token 不受影响 |
 | `DASHSCOPE_API_KEY` | **可选** | 留空即降级为关键词检索 |
+| `OMNILORE_EMBEDDING_PROVIDER` | 可选 | 向量来源（`Implemented`，见状态矩阵）：`dashscope`（默认）/ `openai`（任意 OpenAI 兼容端点，含 **Ollama**）/ `none`（显式只用 BM25） |
+| `OMNILORE_EMBEDDING_BASE_URL` | 可选 | `openai` 的端点，如 `http://localhost:11434/v1`（Ollama）。本地回环地址**不需要** API Key |
+| `OMNILORE_EMBEDDING_API_KEY` / `OPENAI_API_KEY` | 可选 | `openai` 的鉴权（前者优先）；`OMNILORE_PRIMARY_MODEL` / `_ESCALATED_MODEL` / `_EMBEDDING_MODEL` / `_EMBEDDING_DIM` **现已真正生效**，`omnilore bootstrap` 会回显生效值 |
 | `DATABASE_URL` | 容器模式必填 | PostgreSQL 连接串 |
 | `OMNILORE_PROTECTED_FRONTMATTER` | 可选 | 受保护的 frontmatter 字段白名单（逗号分隔）。`none` = **整体关闭保护**（`doc_id` 除外，它是身份锚点）。默认 9 个全保护 |
 | `OMNILORE_CONFLICT_DIR` | 可选 | 冲突副本隐藏目录，默认 `.omnilore/conflicts`（点号开头 = **Obsidian 默认忽略**；Windows 资源管理器仍可见，NTFS 不因点号隐藏目录）。必须是 vault 内相对路径 |
@@ -540,7 +561,7 @@ git commit -s -m "fix(storage): ..."   # -s 追加 DCO Signed-off-by，必填
 1. **默认数据库是内存引擎（内存仿真）。** `RLSDatabaseEngine` 与 PostgreSQL RLS 策略同构，
    但**不是真实 PostgreSQL**，且进程退出后结构化状态清空；磁盘上的原始资产与 Markdown
    知识页会保留。长期持有请走容器模式。
-2. **真实 PG RLS 的持续证据还在等首次 CI 绿灯（目前只有一次人工验证）。** 110 个测试全部跑在内存仿真引擎上；
+2. **真实 PG RLS 的持续证据还在等首次 CI 绿灯（目前只有一次人工验证）。** 140 个测试全部跑在内存仿真引擎上；
    依赖真实 PG 的能力一律标 `Simulated`。**唯一例外**是「真实 PostgreSQL RLS 策略与跨空间
    读拦截」：2026-10-24 在真实 PG 16.15 上人工跑通 3 条探针（策略挂载 / 跨空间不可见 /
    授权后可见），故标 `Tested-real`。`integration-rls` job 已把同一组探针接进 CI，

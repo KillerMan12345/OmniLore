@@ -45,6 +45,12 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import warnings
 
+from .dashscope_client import MODEL_ADAPTER_ENV_NAMES, ModelAdapterConfig, ModelConfigError
+from .embedding_provider import (
+    EMBEDDING_API_KEY_ENV,
+    EmbeddingConfigurationError,
+    describe_effective_embedding,
+)
 from .textio import read_text_canonical, write_text_canonical
 
 # Default identity material used by `omnilore bootstrap`.
@@ -61,21 +67,20 @@ SUPPORTED_STATE_VERSION = 1
 # 为什么需要这份清单：代码只读 `os.environ`，也不加载 `.env`；把
 # `OMNILORE_PROTECTED_FRONTMATTER` 写成 `...FRONTMATTRE` 不会报错，只会静默回落到
 # 默认全保护 —— 用户以为自己关掉了保护，其实没有。这份清单让启动回显能点名它。
+#: 模型 / 向量相关变量集中由 `omnilore.dashscope_client` 定义（R-04b 起**真的被读取**）。
+MODEL_ENV_NAMES: Tuple[str, ...] = MODEL_ADAPTER_ENV_NAMES + (EMBEDDING_API_KEY_ENV,)
+
 KNOWN_OMNILORE_ENV_NAMES: Tuple[str, ...] = (
     "OMNILORE_AUTO_BOOTSTRAP",
     "OMNILORE_BOOTSTRAP_TOKEN",
     "OMNILORE_CONFLICT_DIR",
     "OMNILORE_DATA_DIR",
-    "OMNILORE_EMBEDDING_DIM",
-    "OMNILORE_EMBEDDING_MODEL",
-    "OMNILORE_ESCALATED_MODEL",
     "OMNILORE_INTERNAL_API_URL",
     "OMNILORE_MIGRATOR_DSN",
-    "OMNILORE_PRIMARY_MODEL",
     "OMNILORE_PROTECTED_FRONTMATTER",
     "OMNILORE_TELEMETRY",
     "OMNILORE_WORKER_SCOPED_TOKEN",
-)
+) + MODEL_ENV_NAMES
 
 
 @dataclass(frozen=True)
@@ -92,8 +97,12 @@ class BootstrapResult:
         created_token: True when this call issued a brand-new token.
         reused_state: True when the identity was loaded from `bootstrap.json`.
         state_path: Path of the persisted bootstrap state file.
-        api_key_present: True when `DASHSCOPE_API_KEY` is set (hybrid retrieval).
-        retrieval_mode: `hybrid` when an API key exists, else `keyword_only`.
+        embedding_provider_available: True when the configured embedding provider
+            (R-04b: `dashscope` / `openai` 兼容端点 / Ollama) is usable, i.e. when
+            `retrieval_mode == "hybrid"`. Replaces the old `api_key_present` field,
+            whose meaning ("DASHSCOPE_API_KEY is set") stopped being the right question
+            once the provider became configurable.
+        retrieval_mode: `hybrid` when the provider is usable, else `keyword_only`.
         degraded_reason: Human-readable reason when running in degraded mode,
             empty string otherwise.
     """
@@ -106,7 +115,7 @@ class BootstrapResult:
     created_token: bool
     reused_state: bool
     state_path: Path
-    api_key_present: bool
+    embedding_provider_available: bool
     retrieval_mode: str
     degraded_reason: str
 
@@ -121,7 +130,11 @@ class BootstrapResult:
             "created_token": self.created_token,
             "reused_state": self.reused_state,
             "state_path": str(self.state_path),
-            "api_key_present": self.api_key_present,
+            # 旧键保留：它的字面含义（DASHSCOPE_API_KEY 是否设置）仍然是可回答的，
+            # 只是不再是「能不能做向量检索」的判据 —— 那个问题看
+            # `embedding_provider_available` / `retrieval_mode`。
+            "api_key_present": has_api_key(),
+            "embedding_provider_available": self.embedding_provider_available,
             "retrieval_mode": self.retrieval_mode,
             "degraded_reason": self.degraded_reason,
         }
@@ -441,6 +454,16 @@ def render_sovereignty_notice() -> List[str]:
         lines.append(f"     已回落到默认目录 {DEFAULT_CONFLICT_COPY_DIR}。")
     lines.append(f"  {CONFLICT_COPY_DIR_ENV} → 冲突副本目录（相对 wiki/）：{conflict_dir}")
 
+    # R-04b：向量来源的生效值同样要可见 —— 「我配了 Ollama，怎么还在打阿里云」
+    # 是这一类静默失效里最贵的一种（既花钱又出网）。
+    try:
+        lines.append(describe_effective_embedding(ModelAdapterConfig()))
+    except (ModelConfigError, EmbeddingConfigurationError) as exc:
+        lines.append(f"  ⚠️ 向量检索配置无效：{exc}")
+        lines.append("     该配置不会生效；请修正后重启（未修正时检索会降级为 BM25）。")
+    except Exception as exc:  # pragma: no cover - 回显永不抛异常
+        lines.append(f"  ⚠️ 无法读取向量检索配置（{type(exc).__name__}）：已按默认值处理")
+
     unknown = unknown_omnilore_env_names()
     if unknown:
         lines.append(
@@ -568,13 +591,18 @@ def ensure_bootstrapped(
     base_dir = Path(data_dir) if data_dir is not None else Path(engine.storage.base_dir)
     log = emit or (lambda _msg: None)
 
-    api_key_present = has_api_key()
-    retrieval_mode = "hybrid" if api_key_present else "keyword_only"
-    degraded_reason = (
-        ""
-        if api_key_present
-        else "未配置 DASHSCOPE_API_KEY，自动降级为本地 BM25/关键词检索（零密钥可用）"
-    )
+    # 检索模式由**当前 provider 的实际可用性**决定（R-04b）：DashScope / OpenAI 兼容 /
+    # Ollama / 显式 none 都走同一条判定，不再只看 DASHSCOPE_API_KEY。
+    # 这句话必须与 `ModelAdapter.degraded_reason` 同源，否则「bootstrap 说降级、搜索说不降级」
+    # 这种自相矛盾会再次出现（QA P1-2 的教训）。
+    adapter = getattr(engine, "model_adapter", None)
+    if adapter is not None:
+        retrieval_mode = adapter.retrieval_mode
+        degraded_reason = adapter.degraded_reason
+    else:  # pragma: no cover - 仅用于鸭子类型的假引擎（测试替身）
+        retrieval_mode = "hybrid" if has_api_key() else "keyword_only"
+        degraded_reason = "" if has_api_key() else "未配置 DASHSCOPE_API_KEY，自动降级为本地 BM25/关键词检索（零密钥可用）"
+    embedding_provider_available = retrieval_mode == "hybrid"
 
     state = load_bootstrap_state(base_dir)
     resolved_user_id = user_id or (state or {}).get("user_id") or DEFAULT_USER_ID
@@ -630,7 +658,7 @@ def ensure_bootstrapped(
         created_token=created_token,
         reused_state=reused_state,
         state_path=bootstrap_state_path(base_dir),
-        api_key_present=api_key_present,
+        embedding_provider_available=embedding_provider_available,
         retrieval_mode=retrieval_mode,
         degraded_reason=degraded_reason,
     )

@@ -43,7 +43,7 @@
 - 它没有真实的 MVCC、锁、事务隔离级别与 `pgvector` 索引行为；
 - 进程退出后结构化状态清空（磁盘上的原始资产与 Markdown 知识页保留）。
 
-所以：**「110 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已由 CI 持续验证」。**
+所以：**「140 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已由 CI 持续验证」。**
 本页的例外只有一处，且是**手动、一次性**证据：2026-10-24 在真实 PostgreSQL 16.15 上
 跑了 `make verify-rls-pg` 的三条探针并全部 PASS（完整输出见第 6 节）。它证明了「这套
 策略在真实 PG 上确实生效」，但一次性运行本身不能证明未来不回归。
@@ -85,12 +85,14 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 | 零密钥降级如实上报 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-degradation` | `retrieval_mode` / `degraded_reason` 正交 |
 | 跨平台 LF 规范化 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-lf` | `windows-latest` 真实文件系统门禁 |
 | opt-in 匿名遥测 | `Planned` | 核心能力 / 尚未实现 | — | 决策已接受，实现排期 Q2 |
-| 模型 provider 抽象（R-04b） | `Planned` | 核心能力 / 尚未实现 | — | `OMNILORE_*_MODEL` 当前不被代码读取 |
+| 模型 provider 抽象（R-04b） | `Implemented` | 核心能力 / 其他宣称 | `make verify-provider` | 向量来源可替换：`OMNILORE_EMBEDDING_PROVIDER` = `dashscope`（默认，行为与抽象前**逐字一致**）/ `openai`（任意 OpenAI 兼容端点：OpenAI / Azure / **Ollama** / vLLM / LM Studio）/ `none`；`OMNILORE_EMBEDDING_BASE_URL` + `OMNILORE_EMBEDDING_API_KEY` 指向自建端点（本地回环地址免 key）。四个曾经的「预留、不读取」变量（`OMNILORE_PRIMARY_MODEL` / `_ESCALATED_MODEL` / `_EMBEDDING_MODEL` / `_EMBEDDING_DIM`）**现已生效**，由 `ModelAdapterConfig.__post_init__` 读取，并有测试断言它们进入**真实请求体**。**证据边界**：用例用 `monkeypatch` 的假 HTTP 端点验证请求体/维度/降级，**没有对真实 OpenAI / Ollama 端点发过请求**，故不标 `Tested-real` |
+| ARM64 架构验证（R-11b） | `Implemented` | 核心能力 / 其他宣称 | —（CI `arm64` job） | CI 新增独立 `arm64` job（`ubuntu-24.04-arm`）跑同一套离线用例 + `ruff` + 冒烟；`integration-rls` 刻意留在 x86。**配置已就位、首次真实运行尚未发生** —— 配置正确 ≠ 已经跑过，故标 `Implemented` 而非 `Tested-real` |
+| 统一数据目录解析（R-11b） | `Implemented` | 核心能力 / 其他宣称 | `make verify` | 只有一个解析入口 `omnilore.pathutil.resolve_data_dir`；`ops/index` / `ops/bootstrap.json` / `ops/audit_bundles` 同根。静态守卫（`TestUnifiedDataDir`）禁止任何模块自己调 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR` |
 | n8n 工作流（3 条） | `Planned` | 核心能力 / 尚未实现 | — | JSON 模板已提供，需在真实 n8n 实例验证 |
 | 真实 PostgreSQL 集成 CI | `Implemented` | 核心能力 / 其他宣称 | `make verify-rls-pg` | 已接入 Actions 的 `integration-rls` job（`pgvector/pgvector:0.8.0-pg16` service container + `pg_isready -U -d` 健康检查 + 零 Secret；exit 2「未验证」/ exit 3「结论为否」**逐码**转成 job 失败，无 `continue-on-error`）。**待首次 CI 运行确认后**方可视为持续证据 —— 配置正确 ≠ 已经跑过 |
 
 **当前统计（由测试守护，与 README / CHANGELOG 三处一致）：**
-`Implemented` 6 条 ｜ `Tested-real` 8 条 ｜ `Simulated` 12 条 ｜ `Planned` 3 条 —— 合计 **29 条**。
+`Implemented` 9 条 ｜ `Tested-real` 8 条 ｜ `Simulated` 12 条 ｜ `Planned` 2 条 —— 合计 **31 条**。
 
 ---
 
