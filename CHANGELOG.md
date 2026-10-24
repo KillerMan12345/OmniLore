@@ -48,7 +48,7 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **R-13 能力状态矩阵（四态标注）**：新增 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)，
   README 里的**每一条能力**都标注 `Implemented` / `Tested-real` / `Simulated` / `Planned`
   四态之一，逐条对应，并由测试守护「README ↔ 矩阵 ↔ CHANGELOG 三处一致」。
-  当前 **28 条**能力标注：`Implemented` 6 条、`Tested-real` 7 条、`Simulated` 12 条、`Planned` 3 条。
+  当前 **29 条**能力标注：`Implemented` 6 条、`Tested-real` 8 条、`Simulated` 12 条、`Planned` 3 条。
   ⚠️ 其中「混合检索（BM25 + 向量 + 代码符号）」标 `Simulated` —— `hybrid`（1024 维向量）
   路径在 CI 里是 monkeypatch 桩（无真实网络调用），只有 `keyword_only` 真实执行。
 - **R-13 威胁模型公开页**：新增 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)，
@@ -77,6 +77,39 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **R-16 README 首屏主权声明**：显著位置写明「**我们会在你的笔记里写入 9 个系统字段 —— 你可以关掉**」。
   预先声明本身就是差异化，不藏着。
 
+**可审计证据包（R-05m）与 RLS 策略注释（R-08b 补课）**
+
+- **R-05m `omnilore audit-bundle`**：对某个文档或某个空间导出
+  `audit-bundle.json` + `audit-bundle.verify.md`。内容包含文档本体信息
+  （`doc_id` / `space_id` / `version_key` / `version_label` / `content_revision`）、
+  每个原始证据的 SHA-256 与原始文件名/字节数/入库时间、版本链（`version_key` 序列 +
+  每版内容哈希）、生成信息（导出时间 / 工具版本 / 数据目录**名**）。
+  **哈希一定从磁盘字节重算**再与库里记录比对：不一致标 `mismatch`、文件缺失标 `missing`，
+  两种情况都以**退出码 3**（已验证但结论为否）结束 —— 不会输出「看起来正常但没校验」的包；
+  范围内没有结构化元数据时 **fail-closed**（退出码 1）并给出可执行的下一步。
+  bundle 刻意不含 token / token_hash / 绝对路径，`how_to_verify` 写明
+  「拿哪个文件、用什么算法、与哪个字段比对」以及「它不证明什么」。
+  **跨进程可用**：内存引擎在提交时把「文档 ↔ 原始资产」最小映射写到
+  `<数据目录>/ops/index/`（`assets.json` + `document_assets.json`），
+  所以 `omnilore demo` 之后**另起一个进程**也能导出。该索引是**派生物**
+  （可从 vault frontmatter + `ops/cas/` + 数据库重建，删掉不丢原始证据），
+  且**哈希校验绝不信任索引** —— 仍然读真实字节重算再比对。索引缺失时
+  fail-closed（退出码 1）并提示「先运行 `omnilore demo`」，不把「还没入库」
+  说成「数据损坏」。
+  配套 `make verify-audit`（`tools/verify_audit_bundle.py`）：入库 → 导出 →
+  **改 CAS 里 1 个字节 → `mismatch` + exit 3** → 改回 → 恢复 `verified`，
+  用实测证明证据包真的在校验（而不是把库里的值抄一遍）。
+  另有 **4 条跨进程用例**（`TestAuditBundleCrossProcess`，真实 `subprocess`：
+  `bootstrap`+`demo` 在进程 A，`audit-bundle` 在进程 B/C/D）：跨进程导出 verified、
+  跨进程篡改 → `mismatch` + exit 3、删索引 → exit 1 + 提示先入库、
+  `ops/index/` 内无 token / 绝对路径。
+- **R-08b 补课：21 条 RLS 策略注释**：`sql/001_omnilore_schema_and_rls.sql` 里的
+  **21 条**策略逐条补上四段注释 —— ① 保护什么（表 + 读/写动作）；② 依赖哪个维度
+  （并注明**只有 space + category 两维被真实 PG 探针验证过**，`authz.current_user_id()`
+  与 membership / profile 维度未验证）；③ 防的具体攻击场景；④ 不覆盖什么。
+  **只加注释、不改逻辑**：策略语句摘要被冻结在测试里，改动逻辑会让
+  `TestRlsPolicyComments` 直接变红，提醒先重跑真实 PG 探针再更新证据。
+
 **CI 与测试**
 
 - **R-08b 真实 PostgreSQL RLS 集成 CI**：`.github/workflows/ci.yml` 新增独立 job
@@ -95,12 +128,13 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   配套 7 项配置守卫（`TestCiIntegrationConfig`，只读 YAML、不执行 docker）分别防：
   镜像 tag 写成不存在的 `pg16-v0.8.0`、健康检查漏 `-U`/`-d`、把 DDL 预挂进 initdb 钩子
   导致探针 `exit 2`、`continue-on-error`／吞退出码造成的假绿、以及新 job 挤掉原有离线矩阵。
-- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 91 个测试 +
+- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 110 个测试 +
   ruff + DCO 校验 + 静态红线守卫，全程不使用任何 Secret；**另有一个独立的 `integration-rls`
   job 需要真实 PostgreSQL service container**（见上），它是全仓唯一需要外部服务的门禁，
   同样不使用任何 Secret。
-- **测试套件**：91 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、34 项首发专项、
-  38 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫）。
+- **测试套件**：110 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、34 项首发专项、
+  57 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
+  证据包导出与篡改测试 / 21 条 RLS 策略注释守卫）。
   全部跑在 `RLSDatabaseEngine` **内存仿真引擎**上，与 PostgreSQL RLS 同构但**不是真实 PostgreSQL**。
 
 ### Changed（变更）

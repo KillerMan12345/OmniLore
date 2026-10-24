@@ -99,6 +99,9 @@ class OperationsManager:
         # Phase 2: Restore DB state and files
         db_state = json.loads((backup_source_dir / "db_state.json").read_text(encoding="utf-8"))
         self.engine.db._state = db_state
+        # 恢复会整体替换结构化状态：运行时索引必须同步重建，否则 `audit-bundle` 会拿
+        # 恢复前的旧元数据去校验恢复后的文件，报出一堆假的 mismatch。
+        self.engine.persist_runtime_index()
 
         for rel_path in files_map:
             if rel_path == "db_state.json":

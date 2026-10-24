@@ -20,7 +20,7 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS Assets）**为基础�
 > profile / membership / 组织树继承**未被验证**）｜
 > **混合检索（BM25 + 向量 + 代码符号）= `Simulated`**
 > —— 其中 `hybrid` 路径在 CI 里是 monkeypatch 桩，**没有任何一次真实网络调用**。
-> 完整 28 条标注见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)（真实 PG 证据记录见其第 6 节）。
+> 完整 29 条标注见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)（真实 PG 证据记录见其第 6 节）。
 
 核心价值不是「把文件塞进向量库」，而是把分散资料变成**有来源、有状态、有版本、有权限、有纠错路径**的资产。
 
@@ -56,7 +56,7 @@ YAML frontmatter 里写入 **9 个系统字段**（`doc_id`、`space_id`、`seri
 
 ---
 
-## 60 秒验证（零 API Key，三段命令）
+## 60 秒验证（零 API Key，三段命令 + 可选的证据包）
 
 **不需要任何云账号、不需要配置 API Key、不需要数据库。** 三条命令跑完，你就拥有了一个可用的知识库。
 
@@ -127,6 +127,19 @@ OmniLore demo：投一份文档，再搜到它（零 API Key）
 
   提示：Obsidian 知识页位于 /home/you/OmniLore_Data/02_Vault/spaces/sp_bootstrap_personal/wiki
 ```
+
+### 想带走证据？（`audit-bundle`）
+
+```bash
+omnilore audit-bundle            # 导出到 <数据目录>/ops/audit_bundles/
+```
+
+得到 `audit-bundle.json` + `audit-bundle.verify.md`：文档信息、每个原始证据的 SHA-256、
+版本链，以及「这个哈希该拿哪个文件、用 `sha256sum` / `certutil` 怎么重算、与哪个字段比对」。
+导出时会**从磁盘字节重算哈希**再做比对 —— 内容被改过就报 `mismatch` 并以退出码 3 结束，
+不会给你一个「看起来正常」的包。
+（证据口径：**`Tested-real`** —— `make verify-audit` 与 4 条跨进程用例实测，详见
+[`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)）
 
 > 上面两段是**程序真实输出的抄录**，只有 3 处按运行环境替换：数据目录路径（此处写作
 > `/home/you/OmniLore_Data`）、随机生成的 token、随机生成的 doc_id。其余每一行逐字一致。
@@ -278,13 +291,14 @@ omnilore/
 │   ├── http_worker_api.py                            # 供 n8n 调用的内部 HTTP 网关
 │   └── mcp_stdio_server.py                           # FastMCP JSON-RPC 2.0 Stdio 服务端
 ├── tools/
-│   └── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
-└── tests/                                            # 端到端验收测试，共 91 个用例（0 skip）
+│   ├── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
+│   └── verify_audit_bundle.py                        # 证据包探针：改 1 字节必须 mismatch + exit 3
+└── tests/                                            # 端到端验收测试，共 110 个用例（0 skip）
     ├── _platform_support.py                          # 新增：宿主能力探测（symlink → junction 回退）
     ├── test_omnilore_phase0_acceptance.py           # Phase 0/1 专项（安全/RLS/幂等/恢复/模型门禁）10 项
     ├── test_full_omnilore_suite.py                  # Phase 0~3 + Ops 综合验收 9 项
     ├── test_w0_launch.py                             # W0 新增回归（引导/LF/版本/降级/合成正交/归因/权限/漂移/CLI/MCP 入口/文档宣称）34 项
-    └── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）38 项
+    └── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）+ R-05m（证据包导出）/ R-08b 补课（21 条策略注释）+ 跨进程导出 57 项
 ```
 
 ---
@@ -296,16 +310,16 @@ python -m unittest discover -s tests -p "test_*.py" -v
 # 等价：make verify
 ```
 
-**91 个测试用例**，全部离线运行，不需要数据库或 API Key：
+**110 个测试用例**，全部离线运行，不需要数据库或 API Key：
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---|---|
 | `test_omnilore_phase0_acceptance.py` | 10 项 | Phase 0/1 专项：安全、RLS（跑在内存仿真引擎上，`Simulated`）、幂等、崩溃恢复、模型门禁 |
 | `test_full_omnilore_suite.py` | 9 项 | Phase 0~3 + Ops 综合验收 |
 | `test_w0_launch.py` | 34 项 | **W0 新增**：引导幂等与 token 复用、LF 规范化、版本号一致、零 Key 降级、供应商故障降级、CLI/MCP 路径解析一致、CLI 端到端、MCP stdio 入口握手、`OMNILORE_AUTO_BOOTSTRAP=0` 不废既有 token |
-| `test_w2_w3_roadmap.py` | 38 项 | **W2/W3 新增**：受保护字段白名单可配、冲突副本隐藏目录、README↔状态矩阵↔CHANGELOG 三处一致、威胁模型披露、6 套 Issue 模板可统计；**W4（R-08b）新增**：真实 PG 集成 CI 的配置守卫（镜像 tag / 健康检查 / 退出码语义） |
+| `test_w2_w3_roadmap.py` | 57 项 | **W2/W3 新增**：受保护字段白名单可配、冲突副本隐藏目录、README↔状态矩阵↔CHANGELOG 三处一致、威胁模型披露、6 套 Issue 模板可统计；**W4（R-08b）新增**：真实 PG 集成 CI 的配置守卫（镜像 tag / 健康检查 / 退出码语义） |
 
-> ⚠️ **这 91 个测试全部跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上。**
+> ⚠️ **这 110 个测试全部跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上。**
 > 它与 PostgreSQL RLS **同构**，但**不是真实 PostgreSQL** —— 所以它们证明的是**逻辑正确性**，
 > 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS 相关能力一律标注 `Simulated` ——
 > **唯一例外**是「真实 PostgreSQL RLS 策略与跨空间读拦截」：它有 2026-10-24 在真实
@@ -324,6 +338,7 @@ make verify            # 全量（离线）
 make verify-rls        # 权限/RLS/版本/同步（内存仿真引擎 —— 只证明逻辑）
 make verify-sync       # Obsidian 同步：受保护字段可配 + 冲突副本隐藏目录
 make verify-honesty    # 诚实标注守卫：三处一致
+make verify-audit      # 证据包：改 CAS 里 1 个字节 → mismatch + 退出码 3
 make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL，缺环境即报「未验证」）
 ```
 
@@ -355,7 +370,7 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 > | `Planned` | 尚未实现，或仅有模板、未经过自动化验证 |
 >
 > **当前统计（三处一致，由测试守护）：**
-> `Implemented` 6 条 ｜ `Tested-real` 7 条 ｜ `Simulated` 12 条 ｜ `Planned` 3 条 —— 合计 **28 条**。
+> `Implemented` 6 条 ｜ `Tested-real` 8 条 ｜ `Simulated` 12 条 ｜ `Planned` 3 条 —— 合计 **29 条**。
 >
 > **测试跑在什么上面（重要）**：本项目的全部测试用例都跑在
 > `omnilore.engine.RLSDatabaseEngine`（**内存仿真引擎**）上 —— 它与 PostgreSQL RLS
@@ -406,6 +421,7 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 ### Section 12 — 运维
 
 - **[Simulated]** **备份恢复与一致性对账**：SHA-256 manifest 快照备份、恢复前逐文件校验、跨版本蓝绿向量索引重建、磁盘与数据库一致性对账（`reconcile_consistency`）。
+- **[Tested-real]** **审计证据包导出（audit-bundle）**：`omnilore audit-bundle` 导出 `audit-bundle.json` + `audit-bundle.verify.md`，含文档本体信息（`doc_id` / `space_id` / `version_key` / `version_label` / `content_revision`）、每个原始证据的 SHA-256 与原始文件名/大小/入库时间、版本链，以及「拿哪个文件、用什么算法、与哪个字段比对」的复核步骤。**导出时从磁盘字节重算哈希**再与记录的哈希比对：改一个字节 → `mismatch` + 退出码 3（`make verify-audit` 与四条**跨进程**用例实测，不是口头承诺）；bundle 不含 token / 绝对路径。**已跨进程可用**：入库时会把「文档 ↔ 原始资产」最小映射写到 `ops/index/`（派生物，可从 vault frontmatter + CAS + 数据库重建），`omnilore demo` 之后另起进程也能导出；索引缺失时 fail-closed（退出码 1 + 提示「先入库」），**不产出残缺证据包**。
 
 ### 其他宣称（跨章节）
 
@@ -524,7 +540,7 @@ git commit -s -m "fix(storage): ..."   # -s 追加 DCO Signed-off-by，必填
 1. **默认数据库是内存引擎（内存仿真）。** `RLSDatabaseEngine` 与 PostgreSQL RLS 策略同构，
    但**不是真实 PostgreSQL**，且进程退出后结构化状态清空；磁盘上的原始资产与 Markdown
    知识页会保留。长期持有请走容器模式。
-2. **真实 PG RLS 的持续证据还在等首次 CI 绿灯（目前只有一次人工验证）。** 91 个测试全部跑在内存仿真引擎上；
+2. **真实 PG RLS 的持续证据还在等首次 CI 绿灯（目前只有一次人工验证）。** 110 个测试全部跑在内存仿真引擎上；
    依赖真实 PG 的能力一律标 `Simulated`。**唯一例外**是「真实 PostgreSQL RLS 策略与跨空间
    读拦截」：2026-10-24 在真实 PG 16.15 上人工跑通 3 条探针（策略挂载 / 跨空间不可见 /
    授权后可见），故标 `Tested-real`。`integration-rls` job 已把同一组探针接进 CI，
@@ -539,6 +555,13 @@ git commit -s -m "fix(storage): ..."   # -s 追加 DCO Signed-off-by，必填
 5. **向量召回依赖外部供应商。** 零 Key 时降级为关键词检索，语义能力下降，但不会失败。
 6. **遥测尚未实现。** 决策已接受 opt-in 匿名遥测，实现排期在 Q2（见 `docs/DECISIONS.md`）。
 7. **`engine.py` 的架构级重构排期在 Q2 之后**，本期刻意不做（最小变更原则）。
+8. **`audit-bundle` 的跨进程能力依赖 `ops/index/` 运行时索引，而索引是派生物。**
+   默认内存引擎不跨进程持久化，所以入库时会额外把「文档 ↔ 原始资产」最小映射写到
+   `<数据目录>/ops/index/`（`assets.json` + `document_assets.json`），导出时据此重建范围。
+   **它不是权威数据源**：可从 vault 的 frontmatter + `ops/cas/` 目录 + 数据库重建，
+   删掉不会丢任何原始证据；索引里只有相对路径、没有 token。
+   校验也**绝不信任索引里的哈希** —— 仍然读真实字节重算再比对（改 1 个字节照样 `mismatch` + 退出码 3）。
+   索引不存在时 `audit-bundle` fail-closed（退出码 1）并提示「先运行 `omnilore demo`」。
 
 ---
 

@@ -43,7 +43,7 @@
 - 它没有真实的 MVCC、锁、事务隔离级别与 `pgvector` 索引行为；
 - 进程退出后结构化状态清空（磁盘上的原始资产与 Markdown 知识页保留）。
 
-所以：**「91 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已由 CI 持续验证」。**
+所以：**「110 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已由 CI 持续验证」。**
 本页的例外只有一处，且是**手动、一次性**证据：2026-10-24 在真实 PostgreSQL 16.15 上
 跑了 `make verify-rls-pg` 的三条探针并全部 PASS（完整输出见第 6 节）。它证明了「这套
 策略在真实 PG 上确实生效」，但一次性运行本身不能证明未来不回归。
@@ -64,7 +64,7 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 | Profile 硬性隔离 | `Simulated` | 核心能力 / Phase 0 | `make verify-rls` | 同上；profile 维度由引擎层判定、不由 SQL 策略表达，2026-10-24 的三条探针**未覆盖** profile 切换 |
 | 撤销即时失效 | `Simulated` | 核心能力 / Phase 0 | `make verify-rls` | `< 1ms` 为进程内缓存实测，非 PG 侧实测；PG 探针不涉及撤销链路，故不升级 |
 | 文件网关路径防御 | `Tested-real` | 核心能力 / Phase 0 | `make verify-paths` | 真实文件系统（symlink / junction 回退），三平台真实执行 |
-| 真实 PostgreSQL RLS 策略与跨空间读拦截 | `Tested-real` | 核心能力 / Phase 0 | `make verify-rls-pg` | 依据 **2026-10-24 真实 PostgreSQL 16.15 手动验证**（3 条探针全部 PASS：7 张核心表 `rowsecurity=true`；跨空间行未授权不可见；授权后同一行可见）；**已接入自动化集成 CI**（`.github/workflows/ci.yml` 的 `integration-rls` job），**首次绿灯后本条才具备持续取证**；在此之前单次手动验证 ≠ 持续 CI 证据 |
+| 真实 PostgreSQL RLS 策略与跨空间读拦截 | `Tested-real` | 核心能力 / Phase 0 | `make verify-rls-pg` | 依据 **2026-10-24 真实 PostgreSQL 16.15 手动验证**（3 条探针全部 PASS：7 张核心表 `rowsecurity=true`；跨空间行未授权不可见；授权后同一行可见）；**已接入自动化集成 CI**（`.github/workflows/ci.yml` 的 `integration-rls` job），**首次绿灯后本条才具备持续取证**；在此之前单次手动验证 ≠ 持续 CI 证据。「21 条策略注释」补课（R-08b）已落地：每条策略上方四段注释（保护什么 / 依赖维度 / 防什么 / 不覆盖什么），且策略逻辑被冻结（`TestRlsPolicyComments` 摘要不符即红） |
 | 多格式入库 | `Tested-real` | 核心能力 / Phase 1 | `make verify-parsers` | 真实调用 `pdfplumber` / `pypdf` / `Pillow` |
 | 混合检索（BM25 + 向量 + 代码符号） | `Simulated` | 核心能力 / Phase 1 | `make verify-search` | ⚠️ `hybrid` 路径在 CI 里是 **monkeypatch 桩**（无真实网络调用、无真实 1024 维向量）；`keyword_only` 路径才是真实执行的 |
 | AST 代码符号提取 | `Implemented` | 核心能力 / Phase 1 | `make verify-parsers` | 纯函数，无外部依赖 |
@@ -79,6 +79,7 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 | 组织树只读继承 | `Simulated` | 核心能力 / Phase 3 | `make verify-rls` | `ltree` 继承逻辑在内存引擎上验证；三级组织树的真实 PG 探针**未做**，故不升级 |
 | 跨空间晋升脱敏 | `Implemented` | 核心能力 / Phase 3 | `make verify-redaction` | 纯函数 + 用例；脱敏规则需人工持续维护 |
 | 备份恢复与一致性对账 | `Simulated` | 核心能力 / Section 12 | `make verify-ops` | SHA-256 manifest 与蓝绿索引重建 |
+| 审计证据包导出（audit-bundle） | `Tested-real` | 核心能力 / Section 12 | `make verify-audit` | **跨进程可用**（2026-10-24 修复）：入库时把「文档 ↔ 原始资产」最小映射写到 `ops/index/`（`assets.json` + `document_assets.json`，**派生物**：可从 vault frontmatter + CAS 目录 + 数据库重建），`omnilore demo` 之后另起进程即可导出。证据来自 **4 条真实子进程用例**（`TestAuditBundleCrossProcess`：导出 verified/exit 0、**改 1 字节 → 该资产 `mismatch` + exit 3**、删索引 → exit 1 + 提示先入库、索引无 token/绝对路径）+ `tools/verify_audit_bundle.py` 的 6 条离线断言（含「改回字节恢复 verified」排除假阳性）。**哈希校验不信任索引**：一律读真实字节重算再与 `sha256_hash` 比对。**边界**：真实 PostgreSQL 后端上的持久化取证**尚未做**（当前索引只服务本地/内存模式） |
 | 60 秒验证端到端 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-launch` | CI 以真实子进程跑 `bootstrap` + `demo` |
 | MCP stdio 工具暴露 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-mcp` | CI 以真实管道完成 JSON-RPC 握手 |
 | 零密钥降级如实上报 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-degradation` | `retrieval_mode` / `degraded_reason` 正交 |
@@ -89,7 +90,7 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 | 真实 PostgreSQL 集成 CI | `Implemented` | 核心能力 / 其他宣称 | `make verify-rls-pg` | 已接入 Actions 的 `integration-rls` job（`pgvector/pgvector:0.8.0-pg16` service container + `pg_isready -U -d` 健康检查 + 零 Secret；exit 2「未验证」/ exit 3「结论为否」**逐码**转成 job 失败，无 `continue-on-error`）。**待首次 CI 运行确认后**方可视为持续证据 —— 配置正确 ≠ 已经跑过 |
 
 **当前统计（由测试守护，与 README / CHANGELOG 三处一致）：**
-`Implemented` 6 条 ｜ `Tested-real` 7 条 ｜ `Simulated` 12 条 ｜ `Planned` 3 条 —— 合计 **28 条**。
+`Implemented` 6 条 ｜ `Tested-real` 8 条 ｜ `Simulated` 12 条 ｜ `Planned` 3 条 —— 合计 **29 条**。
 
 ---
 
@@ -101,6 +102,7 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 make verify          # 全量测试（离线）
 make verify-rls      # 权限/RLS/版本/同步相关（内存仿真引擎 —— 结果只证明逻辑）
 make verify-sync     # Obsidian 同步：受保护字段可配 + 冲突副本隐藏目录
+make verify-audit    # 证据包：改 CAS 里 1 个字节 → mismatch + 退出码 3（改回 → verified）
 make verify-honesty  # 诚实标注守卫：README ↔ 本矩阵 ↔ CHANGELOG 三处一致
 ```
 

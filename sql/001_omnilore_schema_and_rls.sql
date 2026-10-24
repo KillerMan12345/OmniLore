@@ -373,9 +373,24 @@ CREATE TABLE IF NOT EXISTS model_runs (
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- -----------------------------------------------------------------------------
+-- =============================================================================
 -- 6. Command-Level Row Level Security (RLS) Policies (Section 7.3.1)
--- -----------------------------------------------------------------------------
+-- =============================================================================
+-- 阅读提示（贡献者请先读这段）
+-- ----------------------------
+-- 下面 21 条行级安全策略，每一条上方都有 **4 行注释**，分别回答：
+--   ① 这条策略保护什么（哪张表、什么读/写动作）；
+--   ② 它依赖哪个权限维度 —— 口径与 `docs/FEATURE_STATUS.md` / `docs/THREAT_MODEL.md` 一致：
+--      **只有 space + category 两维被真实 PostgreSQL 探针验证过**（2026-10-24，三条探针）；
+--      `authz.current_user_id()`（user 维度）与 membership / profile 维度**没有探针覆盖**，
+--      注释里会逐条注明「未验证」，不要把它们读成「已被证明」；
+--   ③ 它防的具体攻击场景；
+--   ④ 它**不覆盖**什么（边界必须写明，否则读者会以为策略比实际更强）。
+--
+-- 红线：**只加注释，不改策略逻辑。** 这 21 条策略是真实 PG 验证的基线；
+-- 动逻辑会让「已验证」这句话失去依据，也让 `tools/verify_rls_pg.py` 的结论过期。
+-- 由 `tests/test_w2_w3_roadmap.py::TestRlsPolicyComments` 自动守护（漏写注释会红）。
+-- =============================================================================
 ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE documents FORCE ROW LEVEL SECURITY;
 
@@ -397,82 +412,161 @@ ALTER TABLE health_metrics FORCE ROW LEVEL SECURITY;
 ALTER TABLE ingestion_tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE ingestion_tasks FORCE ROW LEVEL SECURITY;
 
+-- [docs_select_policy] 保护 documents 的 SELECT：一行文档谁能读出来。
+--   依赖维度：space + category（这两维是唯一被真实 PG 探针验证过的；membership / profile 未验证）。
+--   防：跨空间越权读取 —— 未授权的 space 行在**命令层**就被过滤，而不是查出来再在应用层丢掉。
+--   不覆盖：写入侧（见下面三条 insert/update/delete）；profile 硬性隔离由引擎层判定，不在此表达。
 CREATE POLICY docs_select_policy ON documents
     FOR SELECT TO omnilore_gateway, omnilore_worker
     USING (authz.can_read_scope(space_id, category) OR authz.can_write_scope(space_id, category));
 
+-- [docs_insert_policy] 保护 documents 的 INSERT：谁能新建文档行。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：把文档写进自己无写权限的空间/分类（WITH CHECK 在写入前拒绝，而不是写成功再回滚）。
+--   不覆盖：同一文档的幂等性（由 `compute_idempotency_key` + 唯一约束保证）；series 指针正确性。
 CREATE POLICY docs_insert_policy ON documents
     FOR INSERT TO omnilore_gateway, omnilore_worker
     WITH CHECK (authz.can_write_scope(space_id, category));
 
+-- [docs_update_policy] 保护 documents 的 UPDATE：谁能改已有文档行。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：把别人的文档行「改到自己空间」（USING 挡住读取旧行，WITH CHECK 挡住写入新空间值）。
+--   不覆盖：字段级校验（`content_revision` 乐观锁、受保护 frontmatter 字段由应用层判定）。
 CREATE POLICY docs_update_policy ON documents
     FOR UPDATE TO omnilore_gateway, omnilore_worker
     USING (authz.can_write_scope(space_id, category))
     WITH CHECK (authz.can_write_scope(space_id, category));
 
+-- [docs_delete_policy] 保护 documents 的 DELETE：谁能删除文档行。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：跨空间删除他人文档（未授权行对 DELETE 不可见，因此删不掉）。
+--   不覆盖：级联影响的可追溯性（删除留痕由 audit_events 承担，不是策略的职责）；
+--           也不覆盖「软删除 vs 硬删除」的业务语义。
 CREATE POLICY docs_delete_policy ON documents
     FOR DELETE TO omnilore_gateway, omnilore_worker
     USING (authz.can_write_scope(space_id, category));
 
+-- [series_select_policy] 保护 document_series 的 SELECT：谁能看版本序列本身。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：通过 series 元数据侧信道推断其他空间的版本演进（版本号、当前指针）。
+--   不覆盖：版本链中历史文档行的可见性（那由 docs_select_policy 决定）。
 CREATE POLICY series_select_policy ON document_series
     FOR SELECT TO omnilore_gateway, omnilore_worker
     USING (authz.can_read_scope(space_id, category) OR authz.can_write_scope(space_id, category));
 
+-- [series_insert_policy] 保护 document_series 的 INSERT：谁能新建版本序列。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：在无写权限的空间里凭空插入 series，制造后续版本切换的落点。
+--   不覆盖：`(space_id, version_key)` 唯一性 —— 那由唯一约束保证，不是策略。
 CREATE POLICY series_insert_policy ON document_series
     FOR INSERT TO omnilore_gateway, omnilore_worker
     WITH CHECK (authz.can_write_scope(space_id, category));
 
+-- [series_update_policy] 保护 document_series 的 UPDATE：谁能推进版本指针。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：把别的空间的 series 指针指向自己空间的文档（越权「劫持」版本归属）。
+--   不覆盖：两阶段切换的原子性（Outbox + 补偿负责，见 docs/THREAT_MODEL.md 第 3 节）。
 CREATE POLICY series_update_policy ON document_series
     FOR UPDATE TO omnilore_gateway, omnilore_worker
     USING (authz.can_write_scope(space_id, category))
     WITH CHECK (authz.can_write_scope(space_id, category));
 
+-- [chunks_select_policy] 保护 document_chunks 的 SELECT：检索候选集只能来自可读范围。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：向量/关键词检索跨空间召回他人片段 —— 这是「越权内容经检索泄露」的主要入口。
+--   不覆盖：片段级脱敏；注意本策略**只认读权限**（不像 documents 那样 OR 写权限），
+--           因此「有写权限但无读权限」的角色看不到 chunks，这是刻意的保守选择。
 CREATE POLICY chunks_select_policy ON document_chunks
     FOR SELECT TO omnilore_gateway, omnilore_worker
     USING (authz.can_read_scope(space_id, category));
 
+-- [chunks_insert_policy] 保护 document_chunks 的 INSERT：谁能写入检索片段（含向量）。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：把伪造片段塞进别人的空间，污染其检索结果（投毒）。
+--   不覆盖：embedding 模型版本一致性（由 index_version / embedding_version 字段与重建流程负责）。
 CREATE POLICY chunks_insert_policy ON document_chunks
     FOR INSERT TO omnilore_gateway, omnilore_worker
     WITH CHECK (authz.can_write_scope(space_id, category));
 
+-- [chunks_update_policy] 保护 document_chunks 的 UPDATE：谁能改片段（含把 is_current 置否）。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：把别的空间的片段标记为「已过期」，使其从检索里消失（隐蔽的拒绝服务）。
+--   不覆盖：蓝绿索引重建期间的一致性（重建走整表替换，不经过本策略）。
 CREATE POLICY chunks_update_policy ON document_chunks
     FOR UPDATE TO omnilore_gateway, omnilore_worker
     USING (authz.can_write_scope(space_id, category))
     WITH CHECK (authz.can_write_scope(space_id, category));
 
+-- [chunks_delete_policy] 保护 document_chunks 的 DELETE：谁能删除检索片段。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：跨空间删除片段，让对方的答案「无据可查」。
+--   不覆盖：删除后的审计留痕（audit_events 负责）。
 CREATE POLICY chunks_delete_policy ON document_chunks
     FOR DELETE TO omnilore_gateway, omnilore_worker
     USING (authz.can_write_scope(space_id, category));
 
+-- [doc_assets_select_policy] 保护 document_assets 的 SELECT：谁能看「文档 ↔ 原件」的归属。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：通过归属关系反查他人原件文件名/定位信息（比正文更敏感的元数据）。
+--   不覆盖：assets 表本身（CAS 资产按内容寻址、无空间列，其访问控制由网关层路径校验承担）。
 CREATE POLICY doc_assets_select_policy ON document_assets
     FOR SELECT TO omnilore_gateway, omnilore_worker
     USING (authz.can_read_scope(space_id, category));
 
+-- [doc_assets_write_policy] 保护 document_assets 的 INSERT：谁能建立新的归属关系。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：把别人的原件挂到自己文档下，制造「这条答案来自那份原件」的伪证据。
+--   不覆盖：UPDATE / DELETE —— 本表**没有**对应策略，因此行级默认拒绝（归属关系一经写入即不可改）。
 CREATE POLICY doc_assets_write_policy ON document_assets
     FOR INSERT TO omnilore_gateway, omnilore_worker
     WITH CHECK (authz.can_write_scope(space_id, category));
 
+-- [doc_relations_select_policy] 保护 document_relations 的 SELECT：谁能看文档间关系。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：由 SUPERSEDES / SUPPLEMENT 关系边推断其他空间的文档结构。
+--   不覆盖：关系两端文档本身的可读性（由 docs_select_policy 分别判定）。
 CREATE POLICY doc_relations_select_policy ON document_relations
     FOR SELECT TO omnilore_gateway, omnilore_worker
     USING (authz.can_read_scope(space_id, category));
 
+-- [doc_relations_write_policy] 保护 document_relations 的 INSERT：谁能新增关系边。
+--   依赖维度：space + category（已被真实 PG 探针验证）。
+--   防：伪造 SUPERSEDES 边，让旧版本看起来「已被取代」从而隐藏证据。
+--   不覆盖：UPDATE / DELETE —— 本表同样**没有**对应策略，行级默认拒绝。
 CREATE POLICY doc_relations_write_policy ON document_relations
     FOR INSERT TO omnilore_gateway, omnilore_worker
     WITH CHECK (authz.can_write_scope(space_id, category));
 
+-- [health_select_policy] 保护 health_metrics 的 SELECT：体检指标谁能读。
+--   依赖维度：space + category（已被真实 PG 探针验证）；额外硬编码 category = '04_Health_Archive'。
+--   防：健康数据被「顺手」读进工作/生活分类（分类常量写死在策略里，不靠调用方自觉）。
+--   不覆盖：家庭成员之间的可见边界（目前同空间同分类即可读）、指标核验状态的语义。
 CREATE POLICY health_select_policy ON health_metrics
     FOR SELECT TO omnilore_gateway, omnilore_worker
     USING (category = '04_Health_Archive' AND authz.can_read_scope(space_id, '04_Health_Archive'));
 
+-- [health_insert_policy] 保护 health_metrics 的 INSERT：谁能写入体检指标。
+--   依赖维度：space + category（已被真实 PG 探针验证）；category 必须等于 '04_Health_Archive'。
+--   防：把健康指标写进别的分类，绕过「健康数据的专属保护」。
+--   不覆盖：指标值的正确性（AI 提取结果一律 NEEDS_CHECK，须人工核验后才转 HUMAN_VERIFIED）。
 CREATE POLICY health_insert_policy ON health_metrics
     FOR INSERT TO omnilore_gateway, omnilore_worker
     WITH CHECK (category = '04_Health_Archive' AND authz.can_write_scope(space_id, '04_Health_Archive'));
 
+-- [health_update_policy] 保护 health_metrics 的 UPDATE：谁能改指标（含核验状态）。
+--   依赖维度：space + category（已被真实 PG 探针验证）；category 必须等于 '04_Health_Archive'。
+--   防：把 NEEDS_CHECK 静默改成 HUMAN_VERIFIED（伪造「已由人核验」），把归属空间改到别处。
+--   不覆盖：revision_history 是否被如实追加（应用层职责，不是策略能保证的）。
 CREATE POLICY health_update_policy ON health_metrics
     FOR UPDATE TO omnilore_gateway, omnilore_worker
     USING (category = '04_Health_Archive' AND authz.can_write_scope(space_id, '04_Health_Archive'))
     WITH CHECK (category = '04_Health_Archive' AND authz.can_write_scope(space_id, '04_Health_Archive'));
 
+-- [tasks_select_policy] 保护 ingestion_tasks 的 SELECT：任务回执谁能看。
+--   依赖维度：user（`authz.current_user_id()`）+ space + category —— **user 维度没有真实 PG 探针覆盖**，
+--             space + category 两维已验证；本策略是两者取并集，任一侧通过即可读。
+--   防：读到别人的入库任务（回执里含文件名、结果 doc_id、错误详情）；跨空间扫描在途任务。
+--   不覆盖：任务回执中可能残留的原始文本（回执字段本身不做内容脱敏）。
 CREATE POLICY tasks_select_policy ON ingestion_tasks
     FOR SELECT TO omnilore_gateway, omnilore_worker
     USING (
@@ -480,6 +574,11 @@ CREATE POLICY tasks_select_policy ON ingestion_tasks
         OR (space_id IS NOT NULL AND category IS NOT NULL AND authz.can_read_scope(space_id, category))
     );
 
+-- [tasks_insert_policy] 保护 ingestion_tasks 的 INSERT：谁能创建任务。
+--   依赖维度：user（无真实 PG 探针覆盖）+ space + category（已验证）；user 维度是**必须满足**的，
+--             不是可选并集 —— 不能替别人建任务。
+--   防：以他人身份创建任务（污染任务归属）、在无写权限的空间里排队入库。
+--   不覆盖：幂等性（`compute_idempotency_key` 与 idempotency_key 唯一约束负责）。
 CREATE POLICY tasks_insert_policy ON ingestion_tasks
     FOR INSERT TO omnilore_gateway, omnilore_worker
     WITH CHECK (
@@ -487,6 +586,10 @@ CREATE POLICY tasks_insert_policy ON ingestion_tasks
         AND (space_id IS NULL OR (category IS NOT NULL AND authz.can_write_scope(space_id, category)))
     );
 
+-- [tasks_update_policy] 保护 ingestion_tasks 的 UPDATE：谁能推进任务状态机。
+--   依赖维度：user（无真实 PG 探针覆盖）+ space + category（已验证），两者取并集。
+--   防：改写他人的任务状态（例如把失败任务改成 COMMITTED，制造「已成功入库」的假回执）。
+--   不覆盖：状态迁移合法性（`validate_state_transition` 在引擎层判定；策略只判「谁」不判「能不能」）。
 CREATE POLICY tasks_update_policy ON ingestion_tasks
     FOR UPDATE TO omnilore_gateway, omnilore_worker
     USING (

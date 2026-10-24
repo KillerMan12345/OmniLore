@@ -49,6 +49,8 @@ from .parsers import (
     parse_document_bytes,
     scan_and_redact_sensitive_text,
 )
+from .runtime_index import TRACKED_TABLES as RUNTIME_INDEX_TRACKED_TABLES
+from .runtime_index import persist_runtime_index
 
 
 # =============================================================================
@@ -826,16 +828,44 @@ class RLSTransactionConnection:
     async def transaction(self) -> AsyncIterator["RLSTransactionConnection"]:
         async with self._db._lock:
             self._snapshot = copy.deepcopy(self._db._state)
+            dirty_snapshot = set(self._db._dirty_tables)
             self.guc.clear()
             try:
                 yield self
             except Exception:
                 if self._snapshot is not None:
                     self._db._state = self._snapshot
+                # 回滚时脏标记也要回滚，否则下一次无关提交会白刷一次索引。
+                self._db._dirty_tables = dirty_snapshot
                 raise
+            else:
+                self._flush_runtime_index()
             finally:
                 self._snapshot = None
                 self.guc.clear()
+
+    def _flush_runtime_index(self) -> None:
+        """提交成功后把「文档 ↔ 资产」映射刷到 `<data_dir>/ops/index/`。
+
+        为什么放在事务出口而不是某个具体方法里：入库、版本替换、Obsidian 回写、
+        审核动作都会改这几张表，逐个加刷新点必然漏一个（漏掉的代价是证据包缺数据）。
+        这里只有一个入口，且只在**真正写过**被跟踪的表时才落盘。
+
+        失败**不抛出**：索引是派生物，写不进去不该让入库失败；但必须留下可见痕迹
+        （stderr），否则用户会在导出时才不明所以。
+        """
+        tracked = self._db._dirty_tables.intersection(RUNTIME_INDEX_TRACKED_TABLES)
+        if not tracked or self._db.on_commit is None:
+            return
+        self._db._dirty_tables.clear()
+        try:
+            self._db.on_commit()
+        except Exception as exc:  # pragma: no cover - 只在磁盘异常时触发
+            sys.stderr.write(
+                f"[omnilore] 运行时索引写入失败（不影响入库，但会影响 audit-bundle 的跨进程导出）："
+                f"{type(exc).__name__}: {exc}\n"
+            )
+            sys.stderr.flush()
 
     async def execute(self, sql: str, *args: Any) -> str:
         if "set_config('app.current_user_id', ''" in sql:
@@ -936,6 +966,7 @@ class RLSTransactionConnection:
 
         stored = copy.deepcopy(row)
         self._db._state[table][stored[pk]] = stored
+        self._db._dirty_tables.add(table)
         return copy.deepcopy(stored)
 
     def update_row(self, table: str, pk_val: str, updater: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
@@ -977,6 +1008,7 @@ class RLSTransactionConnection:
                     raise OmniLoreError("UNIQUE_VIOLATION", "Multiple PUBLISHED_CURRENT documents in series")
 
         self._db._state[table][pk_val] = updated
+        self._db._dirty_tables.add(table)
         return copy.deepcopy(updated)
 
     def delete_row(self, table: str, pk_val: str) -> None:
@@ -986,6 +1018,7 @@ class RLSTransactionConnection:
         if not self._can_write(existing.get("space_id"), existing.get("category")):
             raise PermissionDeniedError(f"RLS DELETE USING violation on {table}")
         del self._db._state[table][pk_val]
+        self._db._dirty_tables.add(table)
 
 
 class RLSDatabaseEngine:
@@ -1005,6 +1038,11 @@ class RLSDatabaseEngine:
             "model_runs": {},
             "ledger_entries": {},
         }
+        # 哪些表在本次/最近事务里被写过。只用于「要不要把运行时索引刷到磁盘」这一个判断，
+        # 不参与任何权限或一致性的判定（见 omnilore/runtime_index.py 的四条红线）。
+        self._dirty_tables: Set[str] = set()
+        # 提交成功后的回调（由 OmniLoreEngine 注入）。缺失时引擎纯内存、不落盘。
+        self.on_commit: Optional[Callable[[], None]] = None
 
     @asynccontextmanager
     async def acquire(self) -> AsyncIterator[RLSTransactionConnection]:
@@ -1633,6 +1671,23 @@ class OmniLoreEngine:
         self._last_synced_hash_by_doc: Dict[str, str] = {}
         self.last_backup_manifest: Optional[Dict[str, Any]] = None
         self.last_restore_drill: Optional[Dict[str, Any]] = None
+        # 提交成功后把「文档 ↔ 资产」最小映射刷到 `<data_dir>/ops/index/`，让
+        # `omnilore audit-bundle` 能在**另一个进程**里重建导出范围（R-05m）。
+        # 索引是派生物：写失败不影响入库，但会写到 stderr（见 RLSTransactionConnection）。
+        self.db.on_commit = self.persist_runtime_index
+
+    def persist_runtime_index(self) -> None:
+        """把当前状态投影成运行时索引并落盘（`ops/index/assets.json` + `document_assets.json`）。
+
+        这个索引**只解决定位问题**（asset_id → CAS 相对路径、doc → 元数据），
+        不承担真相：`audit-bundle` 校验时仍然读真实字节重算 SHA-256，
+        再与这里的 `sha256_hash` 比对。详见 `omnilore/runtime_index.py` 的四条红线。
+        """
+        persist_runtime_index(
+            Path(self.storage.base_dir),
+            self.db._state,
+            updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        )
 
     def _record_audit(
         self,

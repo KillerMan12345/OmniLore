@@ -17,7 +17,7 @@ RUFF ?= $(PY) -m ruff
 .DEFAULT_GOAL := help
 .PHONY: help verify test verify-rls verify-rls-pg verify-sync verify-paths \
         verify-parsers verify-redaction verify-ops verify-launch verify-mcp \
-        verify-degradation verify-lf verify-search verify-honesty lint
+        verify-degradation verify-lf verify-search verify-audit verify-honesty lint
 
 help: ## 列出所有验证入口
 	@echo "OmniLore 验证入口（全部离线，除 verify-rls-pg）"
@@ -34,6 +34,7 @@ help: ## 列出所有验证入口
 	@echo "  make verify-degradation 零密钥降级与正交上报"
 	@echo "  make verify-search      检索路径（注意：hybrid 在 CI 里是桩，无真实网络调用）"
 	@echo "  make verify-lf         跨平台 LF 规范化"
+	@echo "  make verify-audit      证据包导出：改一个字节必须 mismatch + 非零退出"
 	@echo "  make verify-honesty    诚实标注守卫：README <-> 状态矩阵 <-> CHANGELOG"
 	@echo "  make lint              ruff 静态检查"
 
@@ -101,6 +102,18 @@ verify-search:
 verify-lf:
 	@echo ">> $(PY) -m unittest tests.test_w0_launch.TestCanonicalTextIO -v"
 	@$(PY) -m unittest tests.test_w0_launch.TestCanonicalTextIO -v
+
+# ---------------------------------------------------------------------------
+# 证据包（R-05m）—— 核心断言是「改一个字节就必须 mismatch + 非零退出」。
+# 这条链路必须跑在**同一进程**内：默认内存引擎不跨进程持久化「文档↔资产」归属关系，
+# 所以探针自己做「入库 → 导出 → 篡改 → 再导出」，而不是拆成两个 CLI 进程。
+# 单跑 `omnilore audit-bundle` 在全新进程里会 fail-closed（exit 1 + 指明下一步）。
+# ---------------------------------------------------------------------------
+verify-audit:
+	@echo ">> $(PY) tools/verify_audit_bundle.py（篡改 1 字节 → mismatch + exit 3；改回 → verified）"
+	@$(PY) tools/verify_audit_bundle.py
+	@echo ">> $(PY) -m unittest tests.test_w2_w3_roadmap.TestAuditBundle -v"
+	@$(PY) -m unittest tests.test_w2_w3_roadmap.TestAuditBundle -v
 
 # ---------------------------------------------------------------------------
 # 诚实标注守卫 —— README / 状态矩阵 / CHANGELOG 三处必须一致

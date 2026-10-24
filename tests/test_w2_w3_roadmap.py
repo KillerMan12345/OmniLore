@@ -16,6 +16,12 @@ OmniLore W2 / W3 路线图回归测试
   `.github/workflows/ci.yml` 的 `integration-rls` job 在**配置层**被守住：镜像 tag 命名、
   `pg_isready` 健康检查、不挂 initdb 种子、以及「退出码 2/3 必须让 job 红」的失败语义。
   本组**只读 YAML 文本**，不执行 docker —— 它证明「配置正确」，不证明「CI 真的会绿」。
+* **R-05m（证据包导出）** `TestAuditBundle` / `TestAuditBundleCli`
+  `omnilore audit-bundle` 导出的 `audit-bundle.json` 必须**真的在校验**：改掉 CAS 里一个字节，
+  结论就要变成 `mismatch`、退出码变成 3。这一组是「可审计」从原理变成证据的那一步。
+* **R-08b 补课（21 条 RLS 策略注释）** `TestRlsPolicyComments`
+  每条策略上方必须有四段注释（保护什么 / 依赖哪个维度 / 防什么 / 不覆盖什么），
+  且策略逻辑本身被钉住不许悄悄改 —— 那 21 条是真实 PG 验证的基线。
 
 为什么这些也要写成测试：本项目的头号风险是「宣称与证据不匹配」。
 靠人肉同步文档与代码必然失败 —— 所以把它变成测试。
@@ -24,11 +30,15 @@ OmniLore W2 / W3 路线图回归测试
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+import asyncio
+import hashlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,6 +54,7 @@ from omnilore import (
     OmniLoreEngine,
     OmniLoreError,
     OmniLoreMCPGateway,
+    OperationType,
     ProfileType,
     RoleType,
     SpaceRecord,
@@ -53,6 +64,22 @@ from omnilore import (
     parse_conflict_copy_dir,
     parse_protected_frontmatter_keys,
 )
+from omnilore.audit_bundle import (
+    AUDIT_BUNDLE_FILENAME,
+    AUDIT_VERIFY_FILENAME,
+    EXIT_AUDIT_NOT_VERIFIED,
+    EXIT_AUDIT_VERIFIED,
+    INTEGRITY_MISMATCH,
+    INTEGRITY_VERIFIED,
+    STATUS_MISSING,
+    STATUS_MISMATCH,
+    build_audit_bundle,
+    bundle_exit_code,
+    render_verification_markdown,
+    scan_text_of_data_sections,
+    write_audit_bundle,
+)
+from omnilore.bootstrap import ensure_bootstrapped
 from omnilore.cli import main as cli_main
 
 REPO_ROOT: Path = Path(__file__).resolve().parent.parent
@@ -1173,3 +1200,522 @@ class TestCiIntegrationConfig(unittest.TestCase):
         for name in ("test", "lint", "dco"):
             self.assertNotIn("needs", self.workflow["jobs"][name],
                              f"{name} 不应依赖任何其他 job（尤其不该被 integration-rls 阻塞）")
+
+
+class TestAuditBundle(unittest.IsolatedAsyncioTestCase):
+    """R-05m：`audit-bundle` 导出的证据包必须**真的在校验**，而不是抄一遍库里的值。
+
+    这一组的核心不是「导出了 JSON」，而是三条负向能力：
+    ① 改一个字节 → `mismatch` + 退出码 3；② 文件缺失 → `missing` 且仍非零退出；
+    ③ 没有元数据 → 拒绝生成（fail-closed），而不是输出一个字段残缺、看起来正常的包。
+    """
+
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve() / "OmniLore_Data"
+        self._saved_key = os.environ.pop("DASHSCOPE_API_KEY", None)
+        self.engine = OmniLoreEngine(self.root)
+        self.boot = ensure_bootstrapped(self.engine, self.root)
+        self.token = self.boot.raw_token
+        self.space_id = self.boot.space_id
+        self.gateway = OmniLoreMCPGateway(self.engine)
+        self.doc_id = await self._ingest("v1.0", "第一版正文：这条答案来自这份原件。")
+
+    async def asyncTearDown(self) -> None:
+        if self._saved_key is not None:
+            os.environ["DASHSCOPE_API_KEY"] = self._saved_key
+        else:
+            os.environ.pop("DASHSCOPE_API_KEY", None)
+        self._tmp.cleanup()
+
+    async def _ingest(self, version_label: str, text: str, *, replace: bool = False) -> str:
+        """入库一份文档（可选替换版本），返回 `doc_id`。"""
+        result = await self.gateway.ingest_document_or_file(
+            self.token,
+            content_bytes=text.encode("utf-8"),
+            filename="audit_note.md",
+            target_space_id=self.space_id,
+            target_category="01_Work",
+            version_key="audit_series",
+            version_label=version_label,
+            operation_type=OperationType.REPLACE_VERSION if replace else OperationType.INGEST_FILE,
+            expected_current_doc_id=self.doc_id if replace else None,
+        )
+        doc_id = result["task"]["result_doc_id"]
+        self.assertTrue(doc_id, "入库没有产出 doc_id，后续断言无从进行")
+        return str(doc_id)
+
+    def _first_asset(self, bundle: Dict[str, object]) -> Dict[str, object]:
+        """取出证据包里第一个原始资产条目。"""
+        assets = bundle["source_assets"]
+        self.assertTrue(assets, "证据包里没有任何原始资产 —— 可审计性无从谈起")
+        return assets[0]
+
+    async def test_bundle_has_required_fields_and_verifies_every_hash(self) -> None:
+        """正常导出：六个要求字段齐全、每条检查 `verified`、退出码 0。"""
+        bundle = build_audit_bundle(self.engine, self.token, doc_id=self.doc_id)
+
+        document = bundle["documents"][0]
+        for field in ("doc_id", "space_id", "version_key", "version_label", "content_revision"):
+            self.assertIn(field, document, f"文档条目缺少要求字段 {field}")
+        self.assertEqual(document["doc_id"], self.doc_id)
+        self.assertEqual(document["version_key"], "audit_series")
+
+        asset = self._first_asset(bundle)
+        for field in ("asset_hash", "original_filename", "size_bytes", "ingested_at"):
+            self.assertIn(field, asset, f"原始证据缺少要求字段 {field}")
+        self.assertEqual(asset["original_filename"], "audit_note.md")
+
+        # 哈希必须是「读磁盘字节重算」的结果，且与库里记录一致
+        self.assertEqual(bundle["integrity"]["status"], INTEGRITY_VERIFIED)
+        self.assertEqual(bundle["integrity"]["counts"]["mismatch"], 0)
+        self.assertTrue(bundle["integrity"]["counts"]["checks_total"] >= 2,
+                        "至少要校验 1 个原始资产 + 1 个知识页")
+        self.assertEqual(bundle_exit_code(bundle), EXIT_AUDIT_VERIFIED)
+
+        # 生成信息与结构版本
+        self.assertIn("generated_at", bundle)
+        self.assertIn("version_display", bundle["generator"])
+        self.assertEqual(bundle["data_dir"]["name"], "OmniLore_Data")
+
+    async def test_tampered_cas_byte_is_reported_as_mismatch_and_exit_code_is_three(self) -> None:
+        """**红线用例**：改掉 CAS 里一个字节 → 该资产 `mismatch`、整包 `mismatch`、退出码 3。
+
+        如果实现只是把数据库里的 `sha256_hash` 抄进 bundle，这条用例会绿得毫无意义 ——
+        所以它断言的是「重算出来的哈希与记录不一致」这个**差异**被如实报出来。
+        """
+        bundle = build_audit_bundle(self.engine, self.token, doc_id=self.doc_id)
+        asset = self._first_asset(bundle)
+        cas_path = self.root / asset["cas_relative_path"]
+        original = cas_path.read_bytes()
+        self.assertTrue(original, "CAS 资产为空，无法做篡改测试")
+        try:
+            cas_path.write_bytes(bytes([original[0] ^ 0xFF]) + original[1:])
+            tampered = build_audit_bundle(self.engine, self.token, doc_id=self.doc_id)
+            check = next(c for c in tampered["integrity"]["checks"] if c["check_id"].startswith("asset:"))
+            self.assertEqual(check["status"], STATUS_MISMATCH,
+                             "改动一个字节后状态仍不是 mismatch：bundle 很可能没真的校验")
+            self.assertNotEqual(check["computed_sha256"], check["recorded_sha256"])
+            self.assertEqual(tampered["integrity"]["status"], INTEGRITY_MISMATCH)
+            self.assertEqual(bundle_exit_code(tampered), EXIT_AUDIT_NOT_VERIFIED,
+                             "结论为否时进程退出码必须非零（3），不能静默输出一个「正常」的包")
+        finally:
+            cas_path.write_bytes(original)
+
+        # 改回去必须恢复 verified —— 否则前一步的 mismatch 不能归因于篡改
+        restored = build_audit_bundle(self.engine, self.token, doc_id=self.doc_id)
+        self.assertEqual(restored["integrity"]["status"], INTEGRITY_VERIFIED)
+        self.assertEqual(bundle_exit_code(restored), EXIT_AUDIT_VERIFIED)
+
+    async def test_missing_asset_is_reported_as_missing_not_skipped(self) -> None:
+        """资产文件不存在时必须如实标 `missing` 并非零退出，不能跳过。"""
+        bundle = build_audit_bundle(self.engine, self.token, doc_id=self.doc_id)
+        asset = self._first_asset(bundle)
+        cas_path = self.root / asset["cas_relative_path"]
+        original = cas_path.read_bytes()
+        try:
+            cas_path.unlink()
+            missing = build_audit_bundle(self.engine, self.token, doc_id=self.doc_id)
+            check = next(c for c in missing["integrity"]["checks"] if c["check_id"].startswith("asset:"))
+            self.assertEqual(check["status"], STATUS_MISSING)
+            self.assertIn("不存在", check["error"])
+            self.assertEqual(bundle_exit_code(missing), EXIT_AUDIT_NOT_VERIFIED)
+            self.assertFalse(missing["integrity"]["is_pass"])
+        finally:
+            cas_path.write_bytes(original)
+
+    async def test_bundle_carries_no_token_or_absolute_path(self) -> None:
+        """bundle 的数据区不得出现 token / token_hash / 绝对路径。"""
+        bundle = build_audit_bundle(self.engine, self.token, doc_id=self.doc_id)
+        data_text = scan_text_of_data_sections(bundle)
+        self.assertNotIn(self.token, data_text, "证据包里出现了原始 token")
+        self.assertNotIn("token", data_text.lower(),
+                         "证据包数据区出现了 token 相关字段（token / token_hash 一律不得导出）")
+        self.assertNotIn(str(self.root), data_text, "证据包里出现了绝对路径")
+        self.assertNotIn(str(Path.home()), data_text, "证据包里出现了用户主目录绝对路径")
+        # 相对路径必须是相对的（不允许以盘符或 / 开头）
+        for asset in bundle["source_assets"]:
+            self.assertFalse(Path(asset["cas_relative_path"]).is_absolute(),
+                             f"CAS 路径不是相对路径：{asset['cas_relative_path']}")
+        for document in bundle["documents"]:
+            self.assertFalse(Path(document["page_relative_path"]).is_absolute(),
+                             f"知识页路径不是相对路径：{document['page_relative_path']}")
+
+    async def test_version_chain_lists_every_version_with_its_own_hash(self) -> None:
+        """版本链必须给出 `version_key` 序列与每版内容哈希，且两版哈希不同。"""
+        await self._ingest("v2.0", "第二版正文：内容变了，哈希也必须变。", replace=True)
+        bundle = build_audit_bundle(self.engine, self.token, space_id=self.space_id)
+
+        self.assertEqual(len(bundle["version_chains"]), 1, "同一 series 应聚合为一条版本链")
+        chain = bundle["version_chains"][0]
+        self.assertEqual(chain["version_key"], "audit_series")
+        labels = [version["version_label"] for version in chain["versions"]]
+        self.assertEqual(labels, ["v1.0", "v2.0"], f"版本链顺序/内容不对：{labels}")
+        hashes = {version["page_sha256_recorded"] for version in chain["versions"]}
+        self.assertEqual(len(hashes), 2, "两个版本的内容哈希竟然相同（版本链没反映真实内容）")
+        self.assertTrue(any(v["is_current"] for v in chain["versions"]), "版本链没有任何 is_current 版本")
+
+    async def test_verify_markdown_tells_a_third_party_how_to_check(self) -> None:
+        """`audit-bundle.verify.md` 必须写明：哪个文件、什么算法、与哪个字段比对。"""
+        bundle = build_audit_bundle(self.engine, self.token, doc_id=self.doc_id)
+        markdown = render_verification_markdown(bundle)
+
+        self.assertIn("SHA-256", markdown)
+        self.assertIn("相对数据目录", markdown)
+        self.assertIn("sha256sum", markdown, "复核说明没有给出可直接执行的校验命令")
+        self.assertIn("certutil", markdown, "复核说明只给了 POSIX 命令，Windows 用户无从复核")
+        step = bundle["how_to_verify"]["steps"][0]
+        self.assertIn(step["relative_path"], markdown, "复核说明没有写出具体文件路径")
+        self.assertIn(step["compare_to"], markdown, "复核说明没有写明「与哪个字段比对」")
+        self.assertNotIn(str(self.root), markdown, "复核说明里出现了绝对路径")
+        # 边界必须写明：证据包不证明什么
+        self.assertIn("what_this_does_not_prove", bundle["how_to_verify"])
+        self.assertIn("不证明", markdown)
+
+    async def test_exported_files_land_in_the_output_directory(self) -> None:
+        """导出必须落两个文件（JSON + 复核说明），且 JSON 可被独立解析。"""
+        bundle = build_audit_bundle(self.engine, self.token, doc_id=self.doc_id)
+        out_dir = Path(self._tmp.name) / "bundle_out"
+        json_path, verify_path = write_audit_bundle(bundle, out_dir)
+
+        self.assertTrue(json_path.is_file(), f"证据包未落盘：{json_path}")
+        self.assertTrue(verify_path.is_file(), f"复核说明未落盘：{verify_path}")
+        self.assertEqual(json_path.name, AUDIT_BUNDLE_FILENAME)
+        self.assertEqual(verify_path.name, AUDIT_VERIFY_FILENAME)
+        reloaded = json.loads(json_path.read_text(encoding="utf-8"))
+        self.assertEqual(reloaded["integrity"]["status"], INTEGRITY_VERIFIED)
+        self.assertEqual(reloaded["bundle_schema_version"], "1.0")
+
+
+class TestAuditBundleCli(unittest.TestCase):
+    """R-05m：CLI 入口的 fail-closed 行为与离线探针（真实子进程）。
+
+    为什么不把它写进上面那组：`cli_main` 内部自己 `asyncio.run()`，在
+    `IsolatedAsyncioTestCase` 的事件循环里调用会炸；而且这里要的正是「真实进程边界」。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name).resolve() / "OmniLore_Data"
+        self._saved_key = os.environ.pop("DASHSCOPE_API_KEY", None)
+
+    async def _ingest(self, engine: OmniLoreEngine, token: str, space_id: str) -> str:
+        """在一个已引导的引擎上入库一份文档，返回 `doc_id`（供 CLI 成功路径用例使用）。"""
+        result = await OmniLoreMCPGateway(engine).ingest_document_or_file(
+            token,
+            content_bytes="CLI 成功路径正文：证据包应当落盘。".encode("utf-8"),
+            filename="cli_note.md",
+            target_space_id=space_id,
+            target_category="01_Work",
+            version_key="cli_series",
+            version_label="v1.0",
+        )
+        return str(result["task"]["result_doc_id"])
+
+    def tearDown(self) -> None:
+        if self._saved_key is not None:
+            os.environ["DASHSCOPE_API_KEY"] = self._saved_key
+        else:
+            os.environ.pop("DASHSCOPE_API_KEY", None)
+        self._tmp.cleanup()
+
+    def test_cli_refuses_to_emit_a_partial_bundle_without_metadata(self) -> None:
+        """索引缺失（从没入库过）时必须 fail-closed，并给出「先入库」的可执行指引。
+
+        这是本功能最容易被做歪的地方：没有元数据时「尽力导出」会得到一个字段缺失、
+        却看起来正常的证据包 —— 那比没有更糟。同时提示不能把「还没入库」
+        说成「数据损坏」，否则用户会以为数据坏了而不敢继续。
+        """
+        # bootstrap 会把 token 与主权回显打到 stdout / stderr，测试里全部收走
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            cli_main(["bootstrap", "--data-dir", str(self.root), "--quiet"])
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            rc = cli_main(["audit-bundle", "--data-dir", str(self.root)])
+        self.assertEqual(rc, 1, f"没有元数据时应当以 1 失败：{err.getvalue()}")
+        self.assertIn("AUDIT_BUNDLE_NO_METADATA", err.getvalue())
+        self.assertIn("omnilore demo", err.getvalue(), "失败信息必须给出可执行的下一步")
+        self.assertNotIn("损坏", err.getvalue(), "「还没入库」不能被说成「数据损坏」")
+        self.assertFalse((self.root / "ops" / "audit_bundles" / AUDIT_BUNDLE_FILENAME).exists(),
+                         "拒绝导出的情况下不应留下任何证据包文件")
+
+    def test_cli_exports_a_bundle_and_exits_zero_on_success(self) -> None:
+        """CLI 成功路径：写入两个文件、打印结论、退出码 0。
+
+        这里用 `mock.patch` 把 CLI 内部的引擎换成本测试已经入库过的实例 —— 这是唯一能在
+        单进程里跑到 CLI 成功分支的办法（默认内存引擎不跨进程持久化，见上一个用例）。
+        它覆盖的是 CLI 自身的「写文件 + 打印 + 退出码」这段胶水代码。
+        """
+        engine = OmniLoreEngine(self.root)
+        boot = ensure_bootstrapped(engine, self.root)
+        asyncio.run(self._ingest(engine, boot.raw_token, boot.space_id))
+        out_dir = Path(self._tmp.name) / "cli_out"
+        out = io.StringIO()
+        with mock.patch("omnilore.cli.OmniLoreEngine", return_value=engine):
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                rc = cli_main(["audit-bundle", "--data-dir", str(self.root), "--out", str(out_dir)])
+
+        self.assertEqual(rc, 0, f"成功导出应以 0 退出：\n{out.getvalue()}")
+        self.assertTrue((out_dir / AUDIT_BUNDLE_FILENAME).is_file())
+        self.assertTrue((out_dir / AUDIT_VERIFY_FILENAME).is_file())
+        printed = out.getvalue()
+        self.assertIn("结论", printed)
+        self.assertIn("verified", printed)
+        self.assertIn("复核说明", printed)
+
+    def test_offline_probe_recomputes_hashes_from_disk(self) -> None:
+        """`tools/verify_audit_bundle.py` 在真实子进程里跑通（`make verify-audit` 的同一条链路）。"""
+        env = dict(os.environ)
+        env.pop("DASHSCOPE_API_KEY", None)
+        proc = subprocess.run(
+            [sys.executable, "tools/verify_audit_bundle.py"],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, f"证据包探针未通过：\n{proc.stdout}\n{proc.stderr}")
+        self.assertIn("[PASS]", proc.stdout)
+        # 篡改测试必须真的被执行到，否则「通过了」这件事没有意义
+        self.assertIn("篡改", proc.stdout)
+        self.assertIn("mismatch", proc.stdout)
+
+
+class TestRlsPolicyComments(unittest.TestCase):
+    """R-08b 补课：21 条 RLS 策略必须有注释，且策略逻辑被钉住不许悄悄改。
+
+    为什么值得单开一组：这 21 条策略是真实 PostgreSQL 验证的基线（2026-10-24 三条探针）。
+    **注释缺失**会让贡献者不敢改、也看不懂自己在改什么；**逻辑被悄悄改动**则会让
+    「已验证」这句话当场过期 —— 而后者不会有任何报错。
+
+    口径与 `docs/FEATURE_STATUS.md` 一致：只有 space + category 两维被真实探针验证过，
+    因此每条注释都必须写清「依赖哪个维度」，其余维度要注明未验证。
+    """
+
+    #: 冻结的策略语句摘要：注释可以改，**策略逻辑一个字都不许动**。
+    #: 改动本常量前请先重跑 `make verify-rls-pg`（真实 PG）并同步
+    #: `docs/FEATURE_STATUS.md` 第 6 节的证据记录，否则「已验证」就是过期宣称。
+    FROZEN_POLICY_DIGEST: str = "947f8c5b9b74a2e0264887c3f1afc40ada020b66b33bf33b6223d5d470605957"
+
+    #: 四段注释各自的关键词：缺任何一段，贡献者就会漏掉一类边界。
+    REQUIRED_MARKERS = ("保护", "依赖维度", "防：", "不覆盖")
+
+    def setUp(self) -> None:
+        self.sql_path = REPO_ROOT / "sql" / "001_omnilore_schema_and_rls.sql"
+        self.text = _read(self.sql_path)
+        self.lines = self.text.splitlines()
+
+    @staticmethod
+    def _policy_statements(sql_text: str) -> List[str]:
+        """抽出全部 `CREATE POLICY ... ;` 语句（注释不参与），用于比对逻辑是否被改过。"""
+        statements = [" ".join(match.group(0).split()) for match in re.finditer(r"CREATE POLICY\b.+?;", sql_text, re.S)]
+        return statements
+
+    def _comment_block_above(self, index: int) -> List[str]:
+        """向上收集紧贴在第 `index` 行之上的连续 `--` 注释行（按原顺序返回）。"""
+        block: List[str] = []
+        cursor = index - 1
+        while cursor >= 0 and self.lines[cursor].lstrip().startswith("--"):
+            block.append(self.lines[cursor])
+            cursor -= 1
+        return list(reversed(block))
+
+    def _policy_line_indexes(self) -> List[int]:
+        """返回每条 `CREATE POLICY` 语句所在的行号（0 基）。"""
+        return [i for i, line in enumerate(self.lines) if line.startswith("CREATE POLICY")]
+
+    def test_there_are_exactly_21_policies(self) -> None:
+        """策略条数必须仍是 21 —— 改动条数等于改动被验证过的基线范围。"""
+        self.assertEqual(len(self._policy_statements(self.text)), 21)
+        self.assertEqual(self.text.count("CREATE POLICY"), 21)
+
+    def test_every_policy_has_a_comment_within_three_lines_above(self) -> None:
+        """每条 `CREATE POLICY` 上方 3 行内必须有注释（防止以后有人加策略不写注释）。"""
+        indexes = self._policy_line_indexes()
+        self.assertEqual(len(indexes), 21, f"策略条数应为 21，实际 {len(indexes)}")
+        missing = []
+        for index in indexes:
+            window = self.lines[max(0, index - 3):index]
+            if not any(line.lstrip().startswith("--") for line in window):
+                missing.append(f"第 {index + 1} 行：{self.lines[index]}")
+        self.assertFalse(missing, "以下策略上方 3 行内没有注释：\n" + "\n".join(missing))
+
+    def test_every_policy_comment_explains_the_four_required_things(self) -> None:
+        """每条策略的注释必须覆盖四件事：保护什么 / 依赖哪个维度 / 防什么 / 不覆盖什么。"""
+        problems: List[str] = []
+        for index in self._policy_line_indexes():
+            block = "\n".join(self._comment_block_above(index))
+            policy_name = self.lines[index].split()[2]
+            if f"[{policy_name}]" not in block:
+                problems.append(f"{policy_name}: 注释没有点名策略名（读者无法把注释与策略对上）")
+            for marker in self.REQUIRED_MARKERS:
+                if marker not in block:
+                    problems.append(f"{policy_name}: 注释缺少「{marker}」这一段")
+        self.assertFalse(problems, "策略注释不完整：\n" + "\n".join(problems))
+
+    def test_policy_logic_is_frozen_against_silent_edits(self) -> None:
+        """策略逻辑（去掉注释后）必须与冻结摘要逐字一致 —— 改逻辑会让「已验证」过期。"""
+        statements = self._policy_statements(self.text)
+        digest = hashlib.sha256("\n".join(statements).encode("utf-8")).hexdigest()
+        self.assertEqual(
+            digest, self.FROZEN_POLICY_DIGEST,
+            "21 条 RLS 策略的逻辑被改动了。注释可以改，逻辑不能 —— 那批策略是 2026-10-24 "
+            "真实 PostgreSQL 探针的验证基线。若确实要改：先重跑 `make verify-rls-pg`，"
+            "把新证据写进 docs/FEATURE_STATUS.md 第 6 节，再更新本测试里的 FROZEN_POLICY_DIGEST。",
+        )
+
+    def test_comments_state_the_probed_dimension_boundary(self) -> None:
+        """注释必须写明「只有哪些维度被真实探针验证过」，不许含糊成「权限已全部验证」。"""
+        probed = [i for i in self._policy_line_indexes() if "space + category" in "\n".join(self._comment_block_above(i))]
+        self.assertEqual(len(probed), 21, "每条策略的注释都应写明它依赖的维度是 space + category")
+        # user 维度的三条策略（tasks_*）必须明说「没有真实 PG 探针覆盖」
+        task_notes = [i for i in self._policy_line_indexes() if "tasks_" in self.lines[i]]
+        self.assertEqual(len(task_notes), 3)
+        for index in task_notes:
+            block = "\n".join(self._comment_block_above(index))
+            self.assertIn("真实 PG 探针覆盖", block,
+                          f"{self.lines[index].split()[2]} 用了 authz.current_user_id()，"
+                          "注释必须说明该维度未被真实探针覆盖")
+
+
+class TestAuditBundleCrossProcess(unittest.TestCase):
+    """R-05m：证据包必须**跨进程**可用（`omnilore demo` 在进程 A，`audit-bundle` 在进程 B）。
+
+    为什么这一组必须用 `subprocess` 起独立进程：之前几组都跑在同一个进程里，
+    内存引擎的结构化状态还在，问题被掩盖了 —— 用户真实用法是「装完 pip，跑完
+    `bootstrap` + `demo`，第二天再导证据包」，那时数据库是空的。
+
+    修复方式：内存引擎在提交时把「文档 ↔ 原始资产」最小映射写到 `ops/index/`
+    （`omnilore/runtime_index.py`），`audit-bundle` 在全新进程里从这份索引重建范围，
+    但**哈希仍然读磁盘真实字节重算**。这一组逐条把这条链路钉住：
+
+    1. 跨进程正常导出 → `integrity.overall == verified`、退出码 0；
+    2. 跨进程篡改 1 个字节 → 该资产 `mismatch`、退出码 3（证明校验没退化成「信索引」）；
+    3. 删掉 `ops/index/` → 退出码 1，且提示「先入库」，不把「还没入库」说成「数据坏了」；
+    4. `ops/index/` 内无 token / 无绝对路径。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.work = Path(self._tmp.name).resolve()
+        self.data_dir = self.work / "OmniLore_Data"
+        self.index_dir = self.data_dir / "ops" / "index"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _run_omnilore(self, *args: str) -> subprocess.CompletedProcess:
+        """在**独立进程**里执行 `python -m omnilore ...`（零 API Key）。"""
+        env = dict(os.environ)
+        env.pop("DASHSCOPE_API_KEY", None)
+        env.pop("OMNILORE_DATA_DIR", None)
+        return subprocess.run(
+            [sys.executable, "-m", "omnilore", *args],
+            cwd=str(REPO_ROOT),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def _bootstrap_and_ingest(self) -> None:
+        """进程 A：bootstrap + demo（入库一份文档），断言两步都成功。"""
+        boot = self._run_omnilore("bootstrap", "--data-dir", str(self.data_dir), "--quiet")
+        self.assertEqual(boot.returncode, 0, f"bootstrap 失败：{boot.stderr}")
+        demo = self._run_omnilore("demo", "--data-dir", str(self.data_dir), "--json")
+        self.assertEqual(demo.returncode, 0, f"demo 失败：{demo.stderr}")
+        self.assertTrue((self.index_dir / "assets.json").is_file(),
+                        "入库后没有写出运行时索引：跨进程导出必然不可用")
+
+    def _export(self, name: str) -> tuple:
+        """进程 B/C/D：导出证据包，返回 `(CompletedProcess, bundle dict 或 None)`。"""
+        out_dir = self.work / name
+        proc = self._run_omnilore("audit-bundle", "--data-dir", str(self.data_dir), "--out", str(out_dir))
+        json_path = out_dir / "audit-bundle.json"
+        bundle = json.loads(json_path.read_text(encoding="utf-8")) if json_path.is_file() else None
+        return proc, bundle
+
+    def _first_cas_path(self) -> Path:
+        """从运行时索引里取出第一个 CAS 文件的绝对路径（篡改测试的目标）。"""
+        payload = json.loads((self.index_dir / "assets.json").read_text(encoding="utf-8"))
+        rel = next(iter(payload["assets"].values()))["cas_rel_path"]
+        return self.data_dir / rel
+
+    def test_fresh_process_exports_a_verified_bundle(self) -> None:
+        """场景 B：进程 A 入库 → 进程 B 导出 → 退出码 0、`integrity.overall == verified`。"""
+        self._bootstrap_and_ingest()
+        proc, bundle = self._export("bundle_ok")
+
+        self.assertEqual(proc.returncode, 0, f"跨进程导出失败：\n{proc.stdout}\n{proc.stderr}")
+        self.assertIsNotNone(bundle, "跨进程导出没有落出 audit-bundle.json")
+        self.assertEqual(bundle["integrity"]["overall"], "verified")
+        self.assertEqual(bundle["integrity"]["status"], "verified")
+        self.assertEqual(bundle["metadata_source"]["source"], "runtime_index")
+        self.assertEqual(bundle["integrity"]["counts"]["documents"], 1)
+        self.assertEqual(bundle["integrity"]["counts"]["source_assets"], 1)
+        self.assertEqual(bundle["integrity"]["counts"]["mismatch"], 0)
+        asset = bundle["source_assets"][0]
+        self.assertEqual(asset["integrity_status"], "verified")
+        self.assertTrue(asset["original_filename"], "跨进程导出丢了原始文件名")
+        self.assertTrue(asset["ingested_at"], "跨进程导出丢了入库时间")
+        # 索引是派生物这件事必须写进 bundle 自身
+        self.assertTrue(any("派生物" in line for line in bundle["limitations"]))
+
+    def test_fresh_process_detects_a_tampered_byte(self) -> None:
+        """场景 C：跨进程再改 1 个字节 → 该资产 `mismatch`、整包 `mismatch`、退出码 3。
+
+        这条是「跨进程也真的在校验」的证明 —— 若实现只是照抄索引里的 `sha256_hash`，
+        这里会以 0 退出并报 verified。
+        """
+        self._bootstrap_and_ingest()
+        cas_path = self._first_cas_path()
+        original = cas_path.read_bytes()
+        try:
+            cas_path.write_bytes(bytes([original[0] ^ 0xFF]) + original[1:])
+            proc, bundle = self._export("bundle_tampered")
+            self.assertEqual(proc.returncode, 3, f"篡改后应以 3 退出：\n{proc.stdout}\n{proc.stderr}")
+            self.assertIsNotNone(bundle)
+            self.assertEqual(bundle["integrity"]["overall"], "mismatch")
+            statuses = {asset["integrity_status"] for asset in bundle["source_assets"]}
+            self.assertEqual(statuses, {"mismatch"}, f"资产状态应为 mismatch，实际 {statuses}")
+            check = next(c for c in bundle["integrity"]["checks"] if c["kind"] == "source_asset")
+            self.assertNotEqual(check["computed_sha256"], check["recorded_sha256"])
+        finally:
+            cas_path.write_bytes(original)
+
+    def test_fresh_process_without_index_says_ingest_first(self) -> None:
+        """场景 D：删掉 `ops/index/` → 退出码 1，且提示「先入库」，不冒充「数据损坏」。"""
+        self._bootstrap_and_ingest()
+        shutil.rmtree(self.index_dir)
+        proc, bundle = self._export("bundle_no_index")
+
+        self.assertEqual(proc.returncode, 1, f"没有索引时应 fail-closed：\n{proc.stdout}\n{proc.stderr}")
+        self.assertIsNone(bundle, "拒绝导出时不应留下证据包文件")
+        self.assertIn("AUDIT_BUNDLE_NO_METADATA", proc.stderr)
+        self.assertIn("omnilore demo", proc.stderr, "提示必须告诉用户下一步该干什么")
+        self.assertNotIn("损坏", proc.stderr, "「还没入库」不能被说成「数据损坏」")
+
+    def test_runtime_index_contains_no_secrets_or_absolute_paths(self) -> None:
+        """`ops/index/` 是派生物，同样不许含 token / token_hash / 绝对路径。"""
+        self._bootstrap_and_ingest()
+        state = json.loads((self.data_dir / "ops" / "bootstrap.json").read_text(encoding="utf-8"))
+        raw_token = state["raw_token"]
+        for name in ("assets.json", "document_assets.json"):
+            text = (self.index_dir / name).read_text(encoding="utf-8")
+            self.assertNotIn(raw_token, text, f"{name} 里出现了原始 token")
+            self.assertNotIn("token", text.lower(), f"{name} 里出现了 token 相关字段")
+            self.assertNotIn(str(self.data_dir), text, f"{name} 里出现了绝对路径")
+            self.assertNotIn(str(Path.home()), text, f"{name} 里出现了用户主目录绝对路径")
+
+        payload = json.loads((self.index_dir / "assets.json").read_text(encoding="utf-8"))
+        for entry in payload["assets"].values():
+            self.assertTrue(entry["cas_rel_path"].startswith("ops/cas/"),
+                            f"索引里的 CAS 路径不是相对路径：{entry['cas_rel_path']}")
+        docs = json.loads((self.index_dir / "document_assets.json").read_text(encoding="utf-8"))
+        for entry in docs["documents"].values():
+            self.assertFalse(Path(entry["wiki_rel_path"]).is_absolute(),
+                             f"索引里的 vault 路径不是相对路径：{entry['wiki_rel_path']}")
+        # 索引自述「我是派生物」——防止以后有人把它当成权威数据源
+        self.assertIn("派生物", payload["note"])
+        self.assertIn("派生物", docs["note"])

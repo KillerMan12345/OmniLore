@@ -55,7 +55,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: "Run the full offline test suite (91 tests: 19 acceptance + 34 W0 launch + 38 W2/W3 roadmap + R-08b CI 配置守卫)"
+      - name: "Run the full offline test suite (110 tests: 19 acceptance + 34 W0 launch + 57 W2/W3 roadmap + R-05m 证据包导出 + R-08b 策略注释守卫)"
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: "Guard: honest labelling (README <-> docs/FEATURE_STATUS.md <-> CHANGELOG)"
