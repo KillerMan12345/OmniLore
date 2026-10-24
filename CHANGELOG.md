@@ -45,10 +45,13 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 
 **诚实标注与贡献入口**
 
+- **公开路线图进度页**：新增 [`docs/ROADMAP_STATUS.md`](docs/ROADMAP_STATUS.md)，公开 8 周窗口的
+  S1–S5 里程碑、G0 / G2 / G3 门禁、维护者 / 首发后 / Q2 待办，并明确 `integration-rls`
+  与 arm64 job 都尚未首次运行、封闭验证当前样本量为 0。
 - **R-13 能力状态矩阵（四态标注）**：新增 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)，
   README 里的**每一条能力**都标注 `Implemented` / `Tested-real` / `Simulated` / `Planned`
   四态之一，逐条对应，并由测试守护「README ↔ 矩阵 ↔ CHANGELOG 三处一致」。
-  当前 **31 条**能力标注：`Implemented` 9 条、`Tested-real` 8 条、`Simulated` 12 条、`Planned` 2 条。
+  当前 **31 条**能力标注：`Implemented` 11 条、`Tested-real` 7 条、`Simulated` 12 条、`Planned` 1 条。
   ⚠️ 其中「混合检索（BM25 + 向量 + 代码符号）」标 `Simulated` —— `hybrid`（1024 维向量）
   路径在 CI 里是 monkeypatch 桩（无真实网络调用），只有 `keyword_only` 真实执行。
 - **R-13 威胁模型公开页**：新增 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)，
@@ -242,6 +245,13 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **混合检索标 `Simulated`**：矩阵里有这一行；`hybrid`（1024 维向量）路径在 CI 里是
   monkeypatch 桩（无真实网络调用），只有 `keyword_only` 真实执行 ——
   首屏与降级组合表旁同步标注该证据边界。
+- **多格式入库证据降级为 `Implemented`**：自动化用例真实覆盖 Markdown / 代码与 `Pillow` PNG，
+  但当前没有构造或入库真实 PDF，故不能把 `pdfplumber` / `pypdf` 分支写成 `Tested-real`。
+- **n8n 工作流证据修正为 `Implemented`**：三份 JSON 的结构、无硬编码凭据与内部 Worker
+  网关已有离线自动化用例；真实 n8n 实例导入 / 启动 / 运行仍未验证，因此不标 `Tested-real`。
+- **容器运行时边界已公开**：compose 会启动 PostgreSQL、应用 SQL 并转发 `DATABASE_URL`，
+  但当前 CLI / MCP 没有实例化 `AsyncpgRepository`，业务请求仍走 `RLSDatabaseEngine`；
+  容器模式现阶段不能宣称结构化状态持久化或多人共享。
 - **裸宣称守卫覆盖 README 全文**：段落 + 紧随其后的引用块为一个宣称单元，跳过代码块；
   首屏 / 降级组合表 / 模式对比表另单独守护。
 - **裸宣称守卫对表格逐行判定**：整张表算一个单元时，块内任意一行有证据词就会放过
@@ -264,9 +274,10 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 公开发布前请一并了解这些边界 —— **我们公开边界，因为我们做安全**。
 
 - **这是预发布版本（alpha）**，仅供评估、研究与贡献使用，请勿放入任何重要业务流程。
-- **默认数据库是内存引擎（内存仿真）**：`omnilore.engine.RLSDatabaseEngine` 与 PostgreSQL
+- **当前应用运行时是内存引擎（内存仿真）**：`omnilore.engine.RLSDatabaseEngine` 与 PostgreSQL
   RLS 策略同构，但**不是真实 PostgreSQL**，且进程退出后状态清空。
-  真实 PostgreSQL 模式需自行应用 `sql/001` + `sql/002`。
+  仓库已提供 SQL、`AsyncpgRepository`、PostgreSQL 容器与独立探针，但 CLI / MCP 尚未读取
+  `DATABASE_URL` 来实例化该仓储层；**容器模式也不能作为持久化运行模式**。
 - **真实 PG RLS 的持续证据还在等首次 CI 绿灯**：`integration-rls` job 已接入（每次 push 在
   干净的真实 PostgreSQL 16 上重跑同三条探针），但它**尚未经过首次真实运行验证**；在此之前
   只有 2026-10-24 的一次性人工验证。因此仅「真实 PostgreSQL RLS 策略与跨空间读拦截」为

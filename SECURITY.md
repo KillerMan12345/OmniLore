@@ -119,7 +119,9 @@ OmniLore 重视每一个安全问题。**请不要**把安全漏洞发到公开 
 
 ### 6.2 其他已知边界
 
-- 默认内存引擎不提供跨进程持久化与真实 PostgreSQL RLS；长期持有请使用容器模式。
+- 当前 CLI / MCP 运行时只使用内存引擎，不提供跨进程持久化与真实 PostgreSQL RLS；
+  compose 虽会启动 PostgreSQL 并应用 SQL，但应用端尚未实例化 `AsyncpgRepository`，
+  **容器模式也不能当作持久化运行模式**。
 - 未配置 API Key 时检索降级为关键词模式，语义召回能力下降 —— 这是**预期降级**，
   由 `retrieval_mode` / `degraded_reason` 如实上报，不是缺陷。
 - 无符号链接权限的宿主上，符号链接防御断言会被显式 skip（见 `tests/_platform_support.py`）。

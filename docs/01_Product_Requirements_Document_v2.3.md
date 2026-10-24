@@ -74,11 +74,11 @@ OmniLore 是一个以原始证据为基础、以可审阅的 Markdown 知识页�
 
 | 编号 | 名称 | 优先级 | 阶段 | 需求描述 | 当前实现状态（`v0.3.0-alpha`） |
 |---|---|---|---|---|---|
-| **FR-01** | 文件与图片入库 | P0 | Phase 1 | 生成任务 ID；记录文件哈希、来源和状态；重复提交可幂等返回 | ✅ Markdown / 代码 / PDF（`pdfplumber`+`pypdf`，含页码与表格）/ 图像（`Pillow`） |
+| **FR-01** | 文件与图片入库 | P0 | Phase 1 | 生成任务 ID；记录文件哈希、来源和状态；重复提交可幂等返回 | `Implemented`：Markdown / 代码与图像有自动化用例；PDF 已实现 `pdfplumber` → `pypdf`，但当前没有真实 PDF 自动化样本 |
 | **FR-02** | 随手投递与显式目标 | P0 | Phase 1 | 显式指定目标时先授权校验；AUTO 目标不明确时进入待确认 | ✅ 越权显式目标直接拒绝；混合/归属不明内容隔离为 `NEEDS_REVIEW` |
 | **FR-03** | 安全预检 | P0 | Phase 0/1 | 令牌、目标空间、文件可读性和类别规则在编译前检查 | ✅ `ResolvedScope` + 命令级 RLS + 文件网关 |
 | **FR-04** | 知识编译 | P0 | Phase 1 | 生成可读 Markdown，保留源文件、章节或页码级来源信息 | ✅ `source_asset_ids` / `source_locator{page,heading}` |
-| **FR-05** | 混合检索 | P0 | Phase 1 | 授权过滤后结合全文/关键词/向量候选，返回文档版本与引用位置 | ✅ 有 Key 时为 BM25 + 1024d 向量；无 Key 时降级为纯 BM25/关键词（`retrieval_mode=keyword_only`） |
+| **FR-05** | 混合检索 | P0 | Phase 1 | 授权过滤后结合全文/关键词/向量候选，返回文档版本与引用位置 | `Simulated`：无 Key 的 BM25 / 关键词路径真实执行；有 Key 的 `hybrid` 路径只有假 HTTP transport，没有真实供应商调用 |
 | **FR-06** | 纠错与重分类 | P0 | Phase 1 | 允许修正正文、类别、标题和候选目标；权限变更需显式批准 | ✅ 全部 7 个审核动作（`APPROVE_REVIEW`/`RECLASSIFY`/`SPLIT_DOCUMENT`/`FIX_EXTRACTED_FIELD`/`REVERT_VERSION`/`PROMOTE_COPY`/`CANCEL_TASK`） |
 | **FR-07** | 幂等任务和失败恢复 | P0 | Phase 1 | 支持重试、失败定位、重复请求和进程中断恢复 | ✅ 幂等键 + Outbox 恢复 Worker + `SKIP LOCKED` 租约 |
 | **FR-08** | 逻辑文档版本管理 | P0 | Phase 1 | 支持新建、替代、补充和回滚；当前版本唯一 | ✅ 两阶段零停机版本切换；系列 + 唯一当前版本指针 |
@@ -91,8 +91,8 @@ OmniLore 是一个以原始证据为基础、以可审阅的 Markdown 知识页�
 | **FR-15** | Space 晋升 / 发布 | P1 | Phase 2/3 | 预览复制内容和敏感信息；用户确认后创建目标空间副本及审计记录 | ✅ `PROMOTE_COPY` 含身份证/手机/银行卡/`sk-`/`tok-`/`ak-` 脱敏预览 |
 | **FR-16** | 企业组织树及继承读取 | P2 | Phase 3 | 支持组织级授权继承；继承写入必须单独授权 | ✅ `ltree` + `parent_space_id` 链；仅 `ORG_PUBLIC` 只读继承，`ORG_RESTRICTED` 不参与 |
 | **FR-17** | 代码符号关联检索 | P1 | Phase 1 | 按接口、类名、路径或 ADR 关联相关技术知识 | ✅ Python `ast` + 多语言正则提取类名/方法名/REST 路由/`ADR-xxx` |
-| **FR-18** | 统一模型接入与配置 | P0 | Phase 0/1 | Chat/Vision 与 Embedding 通过统一适配层调用；模型 ID、地域、超时、重试、维度和提示词版本可配置 | ✅ `ModelAdapter` + `ModelAdapterConfig`（全部来自环境变量） |
-| **FR-19** | 模型调用审计与成本观测 | P1 | Phase 1 | 记录任务 ID、模型/提示词版本、耗时、Token 用量和错误码；默认不记录原始正文或敏感内容 | ✅ `model_runs` 脱敏遥测 + `estimate_cost_usd` |
+| **FR-18** | 统一模型接入与配置 | P0 | Phase 0/1 | Chat/Vision 与 Embedding 通过统一适配层调用；模型 ID、地域、超时、重试、维度和提示词版本可配置 | `Implemented`（有边界）：Chat 仍固定走 DashScope 协议；Embedding 已支持 DashScope / OpenAI 兼容 / none；真实 Vision 与真实外部端点均未验证 |
+| **FR-19** | 模型调用审计与成本观测 | P1 | Phase 1 | 记录任务 ID、模型/提示词版本、耗时、Token 用量和错误码；默认不记录原始正文或敏感内容 | `Implemented`（进程内）：`ModelAdapter` 向私有内存 sink 追加脱敏记录并估算成本；当前未持久化到 `model_runs`，也不是尚未实现的 opt-in 产品遥测 |
 
 ---
 
@@ -122,9 +122,9 @@ OmniLore 是一个以原始证据为基础、以可审阅的 Markdown 知识页�
 4. “自动回滚”改为“可恢复和可补偿” —— 不宣称文件系统与 PostgreSQL 的统一原子事务。
 5. 安全承诺必须转化为测试证据 —— 对外宣称前须有负向测试与恢复演练记录。
 6. 阶段计划以验收条件为准 —— 周期是估算，安全验证与真实恢复演练不可被工期压缩。
-7. **W0 追加五项决策**（详见 [`docs/DECISIONS.md`](DECISIONS.md)）：
+7. **W0 追加六项决策**（详见 [`docs/DECISIONS.md`](DECISIONS.md)）：
    Apache-2.0 许可、版本对外口径 `v0.3.0-alpha`、opt-in 匿名遥测（本次不实现，Q2）、
-   8 周首发窗口 @ 0.5 FTE。
+   8 周首发窗口 @ 0.5 FTE、项目命名为 OmniLore，以及多存储后端方向冻结到首发后。
 
 ---
 
@@ -170,8 +170,9 @@ OmniLore 是一个以原始证据为基础、以可审阅的 Markdown 知识页�
 
 诚实披露：以下边界在本次 alpha 发布中**尚未**消除。
 
-1. **默认数据库是内存引擎。** `RLSDatabaseEngine` 与 PostgreSQL RLS 策略同构，但进程退出后
-   状态清空。真实 PG 模式需自行应用 `sql/001` + `sql/002` 并配置 `DATABASE_URL`。
+1. **当前 CLI / MCP 应用运行时只有内存引擎。** `RLSDatabaseEngine` 与 PostgreSQL RLS 策略同构，
+   但进程退出后状态清空。仓库虽有 `AsyncpgRepository`、SQL、PostgreSQL 容器与 `DATABASE_URL`
+   转发，入口尚未实例化该仓储层；因此容器模式当前也不提供业务状态持久化。
 2. **部分断言依赖宿主能力。** 符号链接防御的断言依赖宿主能否创建 symlink；
    无权限的宿主上会**显式 skip**（`tests/_platform_support.py`），非平台缺陷。
 3. **向量质量依赖外部供应商。** 未配置 `DASHSCOPE_API_KEY` 时降级为关键词检索，

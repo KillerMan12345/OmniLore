@@ -15,7 +15,7 @@
 |---|---|---|
 | A1 | 原始证据（CAS 资产） | SHA-256 内容寻址的不可变字节，落 `$OMNILORE_DATA_DIR/ops/cas/` |
 | A2 | Markdown 知识页 | 人类可审阅的 Obsidian 页面，落 `02_Vault/spaces/<space_id>/wiki/` |
-| A3 | 结构化状态 | 文档/任务/版本/成员/token 元数据，落在数据库（默认内存引擎，容器模式为 PostgreSQL） |
+| A3 | 结构化状态 | 当前 CLI / MCP 业务状态只落在进程内 `RLSDatabaseEngine`；PostgreSQL DDL / 仓储层 / 容器已提供但尚未接入应用运行时 |
 | A4 | 凭据 | Owner token、成员 token、`ops/bootstrap.json` |
 
 信任边界共四道：
@@ -27,7 +27,7 @@
 [ 授权层：四维权限交集 ]
         │  ② 权限边界：Token ∩ Membership ∩ 空间继承 ∩ Profile/Category
         ▼
-[ 引擎层：命令级事务（默认内存仿真引擎 / 容器模式 PostgreSQL + RLS） ]
+[ 引擎层：命令级事务（当前 CLI / MCP 均为内存仿真引擎） ]
         │  ③ 数据边界：越权行在命令层被过滤，而不是在应用层「查出来再丢掉」
         ▼
 [ 文件网关：SecureVaultStorage ]
@@ -45,7 +45,7 @@
 | 威胁 | 防御 | 证据状态 |
 |---|---|---|
 | 跨空间 / 跨 Profile 越权读取 | 四维权限交集，命令级按 `(space_id, category)` 过滤 | `Simulated`（内存仿真引擎） |
-| 路径穿越读取 vault 外文件 | `SecureVaultStorage._verify_safe_subpath`：拒绝绝对路径、`..`/`.`、符号链接 | `Tested-real`（真实文件系统 + 三平台） |
+| 路径穿越读取 vault 外文件 | `SecureVaultStorage._verify_safe_subpath`：拒绝绝对路径、`..`/`.`、符号链接 | `Tested-real`（Linux / Windows 真实文件系统；当前无 macOS CI） |
 | 符号链接把 vault 指向外部目录 | 逐级 `islink` 检查，并逐段拒绝链接链 | `Tested-real` |
 | token 撤销后仍能访问 | 进程内缓存主动失效（实测 `< 1ms`），下次请求即生效 | `Simulated` |
 | AI 提取的健康指标被当成事实 | 默认 `NEEDS_CHECK` + 显式提示，须人工 `FIX_EXTRACTED_FIELD` 才转 `HUMAN_VERIFIED` | `Simulated` |
@@ -72,15 +72,18 @@
    `OperationsManager.reconcile_consistency` 做磁盘与数据库对账，
    把不一致**显式报出来**让你看见。**我们不会假装这是一次原子提交。**
 
-2. **默认数据库是内存引擎，不提供持久化与并发隔离语义。**
-   进程退出后结构化状态清空；它没有真实 MVCC、锁与事务隔离级别。
-   需要真实隔离语义请走容器模式（PostgreSQL），并自行应用 `sql/001` + `sql/002`。
+2. **当前应用运行时只有内存引擎，不提供跨进程持久化与真实并发隔离语义。**
+   进程退出后结构化状态清空；它没有真实 MVCC、锁与事务隔离级别。仓库虽提供 PostgreSQL
+   DDL、seed、`AsyncpgRepository`、容器与 `DATABASE_URL` 转发，但 CLI / MCP 服务端没有实例化
+   该仓储层，业务请求仍走 `RLSDatabaseEngine`。因此**容器模式目前也不能当作 PostgreSQL
+   持久化运行模式**；真实 PG 仅用于独立策略探针。
 
 3. **真实 PostgreSQL RLS 仍无 CI 证据，只有一次性人工验证。**
    2026-10-24 在真实 PostgreSQL 16.15 上人工跑通三条探针（7 张核心表 `rowsecurity=true` /
    未授权时跨空间行不可见 / 授权后同一行可见），证明策略在真实 PG 上确实生效。
-   但请注意它的边界：**没有**自动化测试守护（改坏了 CI 不会红）；探针**未覆盖**
-   profile 维度、写入侧（`INSERT`/`UPDATE`/`DELETE`）策略、组织树继承与撤销链路。
+   但请注意它的边界：自动化 `integration-rls` job 已写入 CI 配置却**尚未首次运行**；探针**未覆盖**
+   profile 维度、写入侧（`INSERT`/`UPDATE`/`DELETE`）策略、组织树继承、撤销链路，
+   也不覆盖 CLI / MCP 到 PostgreSQL 仓储层的应用运行时接线。
    证据记录与「它没有证明什么」见 [`docs/FEATURE_STATUS.md` 第 6 节](FEATURE_STATUS.md)。
    **不要**把它读成「RLS 已被持续验证」。
 

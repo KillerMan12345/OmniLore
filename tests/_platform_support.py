@@ -11,7 +11,9 @@ When the host cannot create a symlink, the corresponding assertion is **SKIPPED
 with an explicit reason**. This is a *host capability limitation*, **NOT** a
 OmniLore platform defect:
 
-* On every POSIX CI image (ubuntu / macOS runners) the full check runs unmodified.
+* On the configured POSIX CI image (Ubuntu) the full check runs unmodified.
+  The repository currently has no macOS CI job, so this helper must not be cited
+  as evidence that macOS has been exercised.
 * The shipped guard itself (`SecureVaultStorage._verify_safe_subpath` and
   `_reject_symlinks_in_chain`) is unchanged and still rejects any symlink that
   the OS *is* able to produce.

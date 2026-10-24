@@ -10,7 +10,7 @@
 | D1 | 开源许可证 | **Apache-2.0**（不采用任何自定义开放许可） | `LICENSE`、`NOTICE`、`pyproject.toml`、`CONTRIBUTING.md` |
 | D2 | 版本号 | 对外统一 `v0.3.0-alpha`；内部代际仍记 v2.3 | `pyproject.toml`、`omnilore/__init__.py`、`CHANGELOG.md`、README |
 | D3 | 遥测 | 接受 **opt-in 匿名遥测**；W0 只落决策，Q2 再实现 | 第 3 节（约束清单）、`CHANGELOG.md` |
-| D4 | 首发窗口 | **8 周**，投入 0.5 FTE | 第 4 节、`CONTRIBUTING.md` 的排期说明 |
+| D4 | 首发窗口 | **8 周**，投入 0.5 FTE | 第 4 节、`docs/ROADMAP_STATUS.md` |
 | D5 | 项目命名 | **OmniLore** | 第 5 节、全仓重命名 |
 | D6 | 多存储后端 | **方向认可，冻结到首发后**；首发窗口零动作 | 第 6 节 |
 
@@ -127,8 +127,10 @@ alpha 阶段**禁止**使用 `production` / `stable` / `企业就绪` / `product
 ## 6. D6 — 多存储后端：方向认可，冻结到首发后
 
 **决定**（2026-10-24，用户「大漠」拍板）：认可「多存储后端可切换」为产品方向
-—— **A 本地 Git / B GitHub 远程+薄层 / C 混合 / D PostgreSQL RLS（现有）/ E 内存仿真（现有）**
-五后端统一在同一套 API 下由使用者按场景选用。但**冻结到首发窗口之后**：
+—— **A 本地 Git / B GitHub 远程+薄层 / C 混合 / D PostgreSQL RLS / E 内存仿真**
+五后端最终统一在同一套 API 下由使用者按场景选用。但**冻结到首发窗口之后**。
+当前只有 E 被 CLI / MCP 业务运行时实际使用；D 已有 SQL、参数化仓储层与独立真实 PG 探针，
+但尚未接入应用入口，不能把「仓储层文件存在」写成「PostgreSQL 运行模式已可用」。
 **8 周首发窗口内对本方向零动作**——不进需求池的 P0/P1、不改 README 能力口径、
 不动架构、不写适配层代码。
 

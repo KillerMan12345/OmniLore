@@ -5,6 +5,10 @@
 > **测试环境：** Linux (Python 3.11.2, `unittest.IsolatedAsyncioTestCase`, `PyYAML`, `Pillow`, `pdfplumber`, `pypdf`)  
 > **编写原则：** 100% 基于事实记录，明确区分“在当前 Linux 运行时中物理执行的测试”与“在本地 Docker + 云端 API 环境中联调的事项”
 
+> **当前状态补充：** 本报告保留 2026-10-22 的 19 项验收基线；当前仓库全量套件已扩展为 140 项。
+> 最新能力证据见 [`FEATURE_STATUS.md`](FEATURE_STATUS.md)，公开路线图进度见
+> [`ROADMAP_STATUS.md`](ROADMAP_STATUS.md)。新增用例不会反向改写本报告的历史执行日期。
+
 ## 1. 测试架构与执行边界说明（基于事实披露）
 
 ### 1.1 在当前 Linux 运行环境中 100% 物理执行并验证通过的部分
@@ -26,8 +30,8 @@
 
 | 外部组件 | 当前自动化测试中的仿真方式 | 宿主机生产联调验证方式 |
 |---|---|---|
-| **PostgreSQL 16 (`pgvector` + `ltree` + RLS)** | `RLSDatabaseEngine` 在内存中维护 15 张表结构（与 `sql/001` 的 15 个 `CREATE TABLE` 一致），监听 `SELECT set_config(...)` 事务级上下文注入，按与 `001_omnilore_schema_and_rls.sql` 完全同构的逻辑执行 `SELECT` / `INSERT` / `UPDATE`（含 `USING` 与 `WITH CHECK`）/ `DELETE` 权限检查、唯一索引检查与异常时的事务深拷贝回滚 | 运行 `docker compose up -d` 启动 `pgvector/pgvector:pg16` 容器，自动加载 `sql/001_omnilore_schema_and_rls.sql`，通过 `omnilore/pg_repository.py` 连接真实数据库实例进行验证 |
-| **阿里云百炼大模型 API (`DashScope`)** | 当未设置环境变量 `DASHSCOPE_API_KEY` 时，`ModelAdapter` 自动走确定性分类/编译规则与 1024 维特征哈希向量；同时通过注入 `rogue_llm_handler` 测试恶意/幻觉模型输出越权字段时的拦截逻辑 | 在 `.env` 中填入真实 `DASHSCOPE_API_KEY`，`ModelAdapter` 自动切换至 `DashScopeHTTPTransport` 发起真实 HTTPS 调用 |
+| **PostgreSQL 16 (`pgvector` + `ltree` + RLS)** | `RLSDatabaseEngine` 在内存中模拟权限语义；另有一次人工真实 PG 三探针，只覆盖策略挂载与跨空间读过滤 | `tools/verify_rls_pg.py` 可在空库独立应用 `sql/001` + `sql/002` 并探测策略。**当前 CLI / MCP 尚未实例化 `AsyncpgRepository`，`DATABASE_URL` 也未接入应用运行时；启动 compose 不等于业务请求已走 PostgreSQL。** |
+| **阿里云百炼大模型 API (`DashScope`)** | 未设置 `DASHSCOPE_API_KEY` 时走确定性分类/编译与本地向量；远程路径用假 transport 验证请求形状与降级 | 如需自行联调，必须把 Key 载入**进程环境变量**（本地运行不自动读取 `.env`）。仓库当前没有真实网络调用证据，故不能把配置步骤写成已验证结果 |
 
 ## 2. PRD 第 14 章量化验收指标追踪矩阵（Traceability Matrix）
 
@@ -55,5 +59,5 @@
 
 
 ### 3.9 `test_09_n8n_workflows_and_internal_worker_gateway`
-- **覆盖目标**：验证 `n8n/workflows/*.json` 全部 3 条可导入工作流结构完整性、零第三方 API Key / 零 BYPASSRLS 凭证约束（D-11、6.4.3、7.1），以及 `omnilore/http_worker_api.py` 内部 HTTP 网关端到端入库、状态查询、Outbox 恢复与全量备份。
-- **实测结果**：`PASS`
+- **覆盖目标**：离线验证 `n8n/workflows/*.json` 三份模板的 JSON 结构、零第三方 API Key / 零 BYPASSRLS 凭据约束（D-11、6.4.3、7.1），以及 `omnilore/http_worker_api.py` 内部 Worker 网关的入库、状态查询、Outbox 恢复与全量备份。
+- **实测结果**：`PASS`（仅结构与内部网关；**未在真实 n8n 实例导入、启动或运行**）

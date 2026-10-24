@@ -25,7 +25,8 @@ python -m unittest discover -s tests -p "test_*.py" -v
 
 > **说明：** 在 Windows 等无符号链接权限的宿主上，2 个 AC-S05 断言会被
 > **显式 skip**（`tests/_platform_support.py` 给出的原因）。这是宿主能力限制，
-> 不是平台缺陷；Linux / macOS CI 上这些断言完整执行。请勿用
+> 不是平台缺陷；Linux CI 上会走真实 symlink，Windows 可回退到无需特权的 junction。
+> 当前没有 macOS CI，故不宣称 macOS 已实跑。请勿用
 > `try/except: pass` 去“修”它们——那会掩盖真实缺陷。
 
 ---

@@ -55,6 +55,21 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 
 ---
 
+## 2.1 PostgreSQL 运行时边界（必须单独说明）
+
+仓库已经包含 PostgreSQL DDL、seed、`AsyncpgRepository`、容器编排和独立 RLS 探针；这些证据证明
+**SQL 资产存在且三条读侧探针曾在真实 PostgreSQL 上通过**。但当前 `OmniLoreEngine`、CLI 与 MCP
+服务端都没有根据 `DATABASE_URL` 实例化 `AsyncpgRepository`，业务请求仍进入
+`RLSDatabaseEngine`。因此：
+
+- `docker compose up` 会启动 PostgreSQL 并应用 SQL，但**不等于** CLI / MCP 的结构化状态已写入 PG；
+- 容器内应用进程退出后，结构化业务状态仍会清空；容器模式目前不能宣称为持久化、多人共享方案；
+- 第 6 节的真实 PG 证据只证明策略挂载与跨空间读拦截，不证明应用运行时已经走该路径。
+
+这是实现边界，不是部署提示。后续只有在运行时接线完成并增加端到端 PostgreSQL 用例后，才能升级口径。
+
+---
+
 ## 3. 状态矩阵（与 README 逐条对应）
 
 | 能力 | 状态 | README 位置 | 验证命令 | 备注 |
@@ -63,9 +78,9 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 | 四维权限交集 | `Simulated` | 核心能力 / Phase 0 | `make verify-rls` | 内存仿真引擎；真实 PG 探针只覆盖 space + category 两维（`authz.can_read_scope`），membership / profile 维度**未做探针**，故不升级 |
 | Profile 硬性隔离 | `Simulated` | 核心能力 / Phase 0 | `make verify-rls` | 同上；profile 维度由引擎层判定、不由 SQL 策略表达，2026-10-24 的三条探针**未覆盖** profile 切换 |
 | 撤销即时失效 | `Simulated` | 核心能力 / Phase 0 | `make verify-rls` | `< 1ms` 为进程内缓存实测，非 PG 侧实测；PG 探针不涉及撤销链路，故不升级 |
-| 文件网关路径防御 | `Tested-real` | 核心能力 / Phase 0 | `make verify-paths` | 真实文件系统（symlink / junction 回退），三平台真实执行 |
+| 文件网关路径防御 | `Tested-real` | 核心能力 / Phase 0 | `make verify-paths` | 真实文件系统（symlink / Windows junction 回退）；已有 Linux / Windows 证据，当前没有 macOS CI，不宣称 macOS 已实跑 |
 | 真实 PostgreSQL RLS 策略与跨空间读拦截 | `Tested-real` | 核心能力 / Phase 0 | `make verify-rls-pg` | 依据 **2026-10-24 真实 PostgreSQL 16.15 手动验证**（3 条探针全部 PASS：7 张核心表 `rowsecurity=true`；跨空间行未授权不可见；授权后同一行可见）；**已接入自动化集成 CI**（`.github/workflows/ci.yml` 的 `integration-rls` job），**首次绿灯后本条才具备持续取证**；在此之前单次手动验证 ≠ 持续 CI 证据。「21 条策略注释」补课（R-08b）已落地：每条策略上方四段注释（保护什么 / 依赖维度 / 防什么 / 不覆盖什么），且策略逻辑被冻结（`TestRlsPolicyComments` 摘要不符即红） |
-| 多格式入库 | `Tested-real` | 核心能力 / Phase 1 | `make verify-parsers` | 真实调用 `pdfplumber` / `pypdf` / `Pillow` |
+| 多格式入库 | `Implemented` | 核心能力 / Phase 1 | `make verify-parsers` | Markdown / 代码解析与真实 `Pillow` PNG 入库有自动化用例；PDF 分支实现了 `pdfplumber` → `pypdf` 回退，但当前测试套件**没有构造或入库真实 PDF**，因此不标 `Tested-real` |
 | 混合检索（BM25 + 向量 + 代码符号） | `Simulated` | 核心能力 / Phase 1 | `make verify-search` | ⚠️ `hybrid` 路径在 CI 里是 **monkeypatch 桩**（无真实网络调用、无真实 1024 维向量）；`keyword_only` 路径才是真实执行的 |
 | AST 代码符号提取 | `Implemented` | 核心能力 / Phase 1 | `make verify-parsers` | 纯函数，无外部依赖 |
 | 两阶段零停机版本控制 | `Simulated` | 核心能力 / Phase 1 | `make verify-rls` | 版本切换的状态机在内存引擎上验证 |
@@ -88,17 +103,17 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 | 模型 provider 抽象（R-04b） | `Implemented` | 核心能力 / 其他宣称 | `make verify-provider` | 向量来源可替换：`OMNILORE_EMBEDDING_PROVIDER` = `dashscope`（默认，行为与抽象前**逐字一致**）/ `openai`（任意 OpenAI 兼容端点：OpenAI / Azure / **Ollama** / vLLM / LM Studio）/ `none`；`OMNILORE_EMBEDDING_BASE_URL` + `OMNILORE_EMBEDDING_API_KEY` 指向自建端点（本地回环地址免 key）。四个曾经的「预留、不读取」变量（`OMNILORE_PRIMARY_MODEL` / `_ESCALATED_MODEL` / `_EMBEDDING_MODEL` / `_EMBEDDING_DIM`）**现已生效**，由 `ModelAdapterConfig.__post_init__` 读取，并有测试断言它们进入**真实请求体**。**证据边界**：用例用 `monkeypatch` 的假 HTTP 端点验证请求体/维度/降级，**没有对真实 OpenAI / Ollama 端点发过请求**，故不标 `Tested-real` |
 | ARM64 架构验证（R-11b） | `Implemented` | 核心能力 / 其他宣称 | —（CI `arm64` job） | CI 新增独立 `arm64` job（`ubuntu-24.04-arm`）跑同一套离线用例 + `ruff` + 冒烟；`integration-rls` 刻意留在 x86。**配置已就位、首次真实运行尚未发生** —— 配置正确 ≠ 已经跑过，故标 `Implemented` 而非 `Tested-real` |
 | 统一数据目录解析（R-11b） | `Implemented` | 核心能力 / 其他宣称 | `make verify` | 只有一个解析入口 `omnilore.pathutil.resolve_data_dir`；`ops/index` / `ops/bootstrap.json` / `ops/audit_bundles` 同根。静态守卫（`TestUnifiedDataDir`）禁止任何模块自己调 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR` |
-| n8n 工作流（3 条） | `Planned` | 核心能力 / 尚未实现 | — | JSON 模板已提供，需在真实 n8n 实例验证 |
-| 真实 PostgreSQL 集成 CI | `Implemented` | 核心能力 / 其他宣称 | `make verify-rls-pg` | 已接入 Actions 的 `integration-rls` job（`pgvector/pgvector:0.8.0-pg16` service container + `pg_isready -U -d` 健康检查 + 零 Secret；exit 2「未验证」/ exit 3「结论为否」**逐码**转成 job 失败，无 `continue-on-error`）。**待首次 CI 运行确认后**方可视为持续证据 —— 配置正确 ≠ 已经跑过 |
+| n8n 工作流（3 条） | `Implemented` | 核心能力 / 其他边界明确的能力 | `make verify` | `test_09_n8n_workflows_and_internal_worker_gateway` 自动验证三份 JSON 的结构、无硬编码凭据，以及内部 Worker 网关的入库 / 恢复 / lint / 备份；**尚未在真实 n8n 实例导入、启动和运行**，故不标 `Tested-real` |
+| 真实 PostgreSQL 集成 CI | `Implemented` | 核心能力 / 其他宣称 | `make verify-rls-pg` | 已接入 Actions 的 `integration-rls` job（`pgvector/pgvector:0.8.0-pg16` service container + `pg_isready -U -d` 健康检查 + 零 Secret；exit 2「未验证」/ exit 3「结论为否」**逐码**转成 job 失败，无 `continue-on-error`）。**待首次 CI 运行确认后**方可视为持续证据 —— 配置正确 ≠ 已经跑过；而且该 job 只跑独立 SQL 探针，**不证明 CLI / MCP 应用运行时已接入 PostgreSQL** |
 
 **当前统计（由测试守护，与 README / CHANGELOG 三处一致）：**
-`Implemented` 9 条 ｜ `Tested-real` 8 条 ｜ `Simulated` 12 条 ｜ `Planned` 2 条 —— 合计 **31 条**。
+`Implemented` 11 条 ｜ `Tested-real` 7 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **31 条**。
 
 ---
 
 ## 4. 验证命令怎么跑
 
-所有 `verify-*` 目标都在 `Makefile` 里，**离线可跑**（不需要数据库、不需要 API Key）：
+除 `verify-rls-pg` 外，所有 `verify-*` 目标都在 `Makefile` 里且**离线可跑**（不需要数据库、不需要 API Key）：
 
 ```bash
 make verify          # 全量测试（离线）

@@ -31,11 +31,14 @@ RLS 探针能验证。但用户**带不走任何证据** —— 想证明「这�
 
 为什么需要结构化元数据（fail-closed）
 ------------------------------------
-`document_assets`（文档 ↔ 资产的归属关系）只存在于数据库里。默认的内存仿真引擎
-（`RLSDatabaseEngine`）**不跨进程持久化**，所以在一个全新进程里跑 `omnilore audit-bundle`
-拿不到归属关系。这种情况下本模块**拒绝**基于残缺信息生成 bundle，抛
-`AUDIT_BUNDLE_NO_METADATA` 并给出可执行的下一步 —— 一个字段缺失的「证据包」比没有更糟，
-因为它会让人以为已经验证过。详见 `docs/THREAT_MODEL.md` 与 `docs/FEATURE_STATUS.md`。
+`document_assets`（文档 ↔ 资产的归属关系）在权威形态下属于数据库。默认的内存仿真引擎
+（`RLSDatabaseEngine`）不跨进程持久化，所以提交成功后会把导出所需的**最小映射**投影到
+`ops/index/` 运行时索引。索引是派生物，只负责定位；导出仍从磁盘重算哈希，不信任索引里的
+校验结果。这样 `omnilore demo` 在进程 A 入库后，进程 B 可以导出证据包。
+
+若数据库元数据与运行时索引都不可用，本模块会拒绝生成残缺 bundle，抛
+`AUDIT_BUNDLE_NO_METADATA` 并给出可执行的下一步。详见 `runtime_index.py`、
+`docs/THREAT_MODEL.md` 与 `docs/FEATURE_STATUS.md`。
 """
 
 from __future__ import annotations
