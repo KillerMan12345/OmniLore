@@ -43,8 +43,12 @@
 
 > **当前实现边界：** 上图同时展示设计目标与已落地模块，不表示入口已经把两种数据引擎
 > 接成可切换后端。当前 `OmniLoreEngine`、CLI 与 MCP 服务端只实例化
-> `RLSDatabaseEngine`；`pg_repository.py`、SQL 与 PostgreSQL 容器虽已存在，
-> 但 `DATABASE_URL` 尚未接入应用运行时。真实 PG 证据来自独立 RLS 探针，不是业务端到端链路。
+> `RLSDatabaseEngine`，**业务读写仍然走内存引擎**；`pg_repository.py`、SQL 与 PostgreSQL
+> 容器虽已存在，仍未被业务路径实例化。
+> 设置 `DATABASE_URL` 时会额外建立一条**安全 PG 连接层**（`omnilore/pg_runtime.py`：连接角色
+> 必须非超级用户、无 `BYPASSRLS`、是策略角色成员，否则拒绝启动；事务内 `SET LOCAL ROLE` +
+> 注入 `app.*` GUC），但它只做连接与启动自检，**不承载业务读写**。
+> 真实 PG 证据来自独立 RLS 探针与安全连接层的角色验证，不是业务端到端链路。
 
 ### 1.2 核心信任边界约束
 

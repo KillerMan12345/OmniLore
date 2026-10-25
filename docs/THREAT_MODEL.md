@@ -15,7 +15,7 @@
 |---|---|---|
 | A1 | 原始证据（CAS 资产） | SHA-256 内容寻址的不可变字节，落 `$OMNILORE_DATA_DIR/ops/cas/` |
 | A2 | Markdown 知识页 | 人类可审阅的 Obsidian 页面，落 `02_Vault/spaces/<space_id>/wiki/` |
-| A3 | 结构化状态 | 当前 CLI / MCP 业务状态只落在进程内 `RLSDatabaseEngine`；PostgreSQL DDL / 仓储层 / 容器已提供但尚未接入应用运行时 |
+| A3 | 结构化状态 | 当前 CLI / MCP **业务状态只落在进程内 `RLSDatabaseEngine`**；PostgreSQL DDL / 仓储层 / 容器已提供，且设置 `DATABASE_URL` 时会建立一条**安全 PG 连接层**（只读环境变量做连接与启动自检），但**业务读写仍未走 PostgreSQL** |
 | A4 | 凭据 | Owner token、成员 token、`ops/bootstrap.json` |
 
 信任边界共四道：
@@ -27,8 +27,10 @@
 [ 授权层：四维权限交集 ]
         │  ② 权限边界：Token ∩ Membership ∩ 空间继承 ∩ Profile/Category
         ▼
-[ 引擎层：命令级事务（当前 CLI / MCP 均为内存仿真引擎） ]
+[ 引擎层：命令级事务（当前 CLI / MCP 业务读写均为内存仿真引擎） ]
         │  ③ 数据边界：越权行在命令层被过滤，而不是在应用层「查出来再丢掉」
+        │     设置 DATABASE_URL 时另有一条安全 PG 连接层（安全角色 + SET LOCAL ROLE + RLS GUC）
+        │     —— 它只做连接与自检，不承载业务读写
         ▼
 [ 文件网关：SecureVaultStorage ]
         │  ④ 文件系统边界：绝对路径 / `..` / 符号链接一律拒绝
@@ -45,6 +47,7 @@
 | 威胁 | 防御 | 证据状态 |
 |---|---|---|
 | 跨空间 / 跨 Profile 越权读取 | 四维权限交集，命令级按 `(space_id, category)` 过滤 | `Simulated`（内存仿真引擎） |
+| 应用误以**超级用户 / `BYPASSRLS` 角色**连上 PostgreSQL（这类角色会**静默绕过 RLS**，表现为「一切正常但隔离全失效」） | `PgRuntime._assert_safe_role`：连接后强制校验 `rolsuper` / `rolbypassrls` / 策略角色成员资格，任一不满足即**拒绝启动**（fails closed，不降级放行） | `Tested-real`（2026-10-25 真实 PostgreSQL 16.15 人工验证：以超级用户 `omnilore_migrator` 连接被拒绝启动；**非 CI**。离线另有 5 条 mock 用例钉住该分支） |
 | 路径穿越读取 vault 外文件 | `SecureVaultStorage._verify_safe_subpath`：拒绝绝对路径、`..`/`.`、符号链接 | `Tested-real`（Linux / Windows 真实文件系统；当前无 macOS CI） |
 | 符号链接把 vault 指向外部目录 | 逐级 `islink` 检查，并逐段拒绝链接链 | `Tested-real` |
 | token 撤销后仍能访问 | 进程内缓存主动失效（实测 `< 1ms`），下次请求即生效 | `Simulated` |
@@ -56,10 +59,13 @@
 > **`Simulated` 的含义**：证据来自与 PostgreSQL RLS **同构的内存仿真引擎**，
 > 真实 PostgreSQL 上没有 CI 证据。详见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)。
 >
-> **唯一例外**：「真实 PostgreSQL RLS 策略与跨空间读拦截」是 `Tested-real` ——
-> 依据 2026-10-24 在真实 PostgreSQL 16.15 上的一次**人工**验证（3 条探针 PASS）。
-> 它是**一次性证据，不是 CI 门禁**；完整输出与「它没有证明什么」见
-> [`docs/FEATURE_STATUS.md` 第 6 节](FEATURE_STATUS.md)。
+> **两条例外**（都是 `Tested-real`，且都是**人工一次性证据、不是 CI 门禁**）：
+> ①「真实 PostgreSQL RLS 策略与跨空间读拦截」—— 依据 2026-10-24 在真实 PostgreSQL 16.15 上的
+> 人工验证（3 条探针 PASS）；②「PostgreSQL 安全连接层与 RLS 生效验证」—— 依据 2026-10-25 在
+> 真实 PostgreSQL 16.15 上以应用角色 `omnilore_app` 走运行时连接层的人工验证（3 条探针 PASS）。
+> 完整输出与「它们没有证明什么」见
+> [`docs/FEATURE_STATUS.md` 第 6 / 6.1 节](FEATURE_STATUS.md)。
+> **② 尤其不该被读成「业务数据已持久化」** —— 业务读写仍走内存引擎。
 
 ---
 
@@ -72,20 +78,25 @@
    `OperationsManager.reconcile_consistency` 做磁盘与数据库对账，
    把不一致**显式报出来**让你看见。**我们不会假装这是一次原子提交。**
 
-2. **当前应用运行时只有内存引擎，不提供跨进程持久化与真实并发隔离语义。**
-   进程退出后结构化状态清空；它没有真实 MVCC、锁与事务隔离级别。仓库虽提供 PostgreSQL
-   DDL、seed、`AsyncpgRepository`、容器与 `DATABASE_URL` 转发，但 CLI / MCP 服务端没有实例化
-   该仓储层，业务请求仍走 `RLSDatabaseEngine`。因此**容器模式目前也不能当作 PostgreSQL
-   持久化运行模式**；真实 PG 仅用于独立策略探针。
+2. **当前业务数据层只有内存引擎，不提供跨进程持久化与真实并发隔离语义。**
+   进程退出后结构化状态清空；它没有真实 MVCC、锁与事务隔离级别。设置 `DATABASE_URL` 时，
+   MCP 会建立一条**安全 PG 连接层**（连接角色必须非超级用户、无 `BYPASSRLS`、是策略角色成员，
+   否则拒绝启动），但它只做连接与启动自检 —— 仓库虽提供 PostgreSQL DDL、seed、
+   `AsyncpgRepository`、容器与 `DATABASE_URL` 转发，CLI / MCP 业务路径仍**没有**实例化该仓储层，
+   业务读写仍走 `RLSDatabaseEngine`。因此**容器模式目前也不能当作 PostgreSQL 持久化运行模式**；
+   真实 PG 当前只用于独立策略探针与安全连接自检。
+   **把「连上了 + RLS 验证过」读成「数据已持久化 / 可多人共享」是误读。**
 
-3. **真实 PostgreSQL RLS 仍无 CI 证据，只有一次性人工验证。**
-   2026-10-24 在真实 PostgreSQL 16.15 上人工跑通三条探针（7 张核心表 `rowsecurity=true` /
-   未授权时跨空间行不可见 / 授权后同一行可见），证明策略在真实 PG 上确实生效。
-   但请注意它的边界：自动化 `integration-rls` job 已写入 CI 配置却**尚未首次运行**；探针**未覆盖**
+3. **真实 PostgreSQL RLS 仍无 CI 证据，只有人工一次性验证（两次，均非 CI）。**
+   ① 2026-10-24 在真实 PostgreSQL 16.15 上人工跑通三条探针（7 张核心表 `rowsecurity=true` /
+   未授权时跨空间行不可见 / 授权后同一行可见）；② 2026-10-25 在同一版本真实 PG 上以**应用角色**
+   `omnilore_app` 走运行时连接层跑通三条探针（未授权 0 行 / 授权后可见 / 连接角色非超用户
+   无 `BYPASSRLS`），且超级用户连接被拒绝启动。两者共同证明策略与安全连接路径在真实 PG 上确实生效。
+   但请注意它们的边界：自动化 `integration-rls` job 已写入 CI 配置却**尚未首次运行**；探针**未覆盖**
    profile 维度、写入侧（`INSERT`/`UPDATE`/`DELETE`）策略、组织树继承、撤销链路，
-   也不覆盖 CLI / MCP 到 PostgreSQL 仓储层的应用运行时接线。
-   证据记录与「它没有证明什么」见 [`docs/FEATURE_STATUS.md` 第 6 节](FEATURE_STATUS.md)。
-   **不要**把它读成「RLS 已被持续验证」。
+   **也不覆盖业务读写到 PostgreSQL 的数据面迁移**（业务仍走内存引擎）。
+   证据记录与「它没有证明什么」见 [`docs/FEATURE_STATUS.md` 第 6 / 6.1 节](FEATURE_STATUS.md)。
+   **不要**把它读成「RLS 已被持续验证」，更**不要**读成「数据已持久化」。
 
 4. **不防本机恶意软件 / 有本机文件权限的攻击者。**
    token 以明文持久化在 `$OMNILORE_DATA_DIR/ops/bootstrap.json`；

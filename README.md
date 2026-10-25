@@ -9,7 +9,7 @@
 > 许可：**[Apache-2.0](LICENSE)** ｜ 决策记录：**[docs/DECISIONS.md](docs/DECISIONS.md)**
 > 仓库：**[github.com/KillerMan12345/OmniLore](https://github.com/KillerMan12345/OmniLore)**
 
-OmniLore 是一个以**不可变原始证据（SHA-256 CAS Assets）**为基础、以**可审阅的 Obsidian Markdown 知识页**为人类主要编辑界面、并提供 PostgreSQL 15+（`pgvector` + `ltree`）DDL、参数化仓储层与真实 RLS 探针的知识中枢。**当前 CLI / MCP 应用运行时仍使用内存仿真引擎，尚未接通 PostgreSQL 仓储层；容器编排会启动 PostgreSQL，但不能据此宣称业务状态已持久化到 PG。**
+OmniLore 是一个以**不可变原始证据（SHA-256 CAS Assets）**为基础、以**可审阅的 Obsidian Markdown 知识页**为人类主要编辑界面、并提供 PostgreSQL 15+（`pgvector` + `ltree`）DDL、参数化仓储层与真实 RLS 探针的知识中枢。**业务数据层当前仍是内存仿真引擎（`RLSDatabaseEngine`），进程退出后结构化状态清空 —— 不能据此宣称持久化或多人共享；设置 `DATABASE_URL` 时，MCP 会额外建立一条安全 PostgreSQL 连接层（连接角色必须非超级用户、无 `BYPASSRLS`、是策略角色成员，否则拒绝启动），并在事务内 `SET LOCAL ROLE` + 注入 RLS GUC —— 但业务读写**尚未**走这条连接。**
 
 > **首屏这句话里的每一条能力，都有证据状态**（不是裸宣称）：
 > **不可变原始证据（SHA-256 CAS）= `Implemented`** ｜
@@ -19,8 +19,12 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS Assets）**为基础�
 > **四维权限交集 / Profile 隔离 = `Simulated`**（探针只覆盖 space + category 两维，
 > profile / membership / 组织树继承**未被验证**）｜
 > **混合检索（BM25 + 向量 + 代码符号）= `Simulated`**
-> —— 其中 `hybrid` 路径在 CI 里是 monkeypatch 桩，**没有任何一次真实网络调用**。
-> 完整 31 条标注见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)（真实 PG 证据记录见其第 6 节）。
+> —— 其中 `hybrid` 路径在 CI 里是 monkeypatch 桩，**没有任何一次真实网络调用** ｜
+> **PostgreSQL 安全连接层与 RLS 生效验证 = `Tested-real`**（2026-10-25 在真实 PostgreSQL 16.15 上以
+> 应用角色 `omnilore_app` 人工跑通三条探针，**非 CI**、一次性，可复跑脚本
+> `tools/verify_rls_app_role.py`；它只证明「安全连接这条路径上 RLS 确实生效」，
+> **不证明业务数据已持久化到 PostgreSQL**）
+> 完整 32 条标注见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)（真实 PG 证据记录见其第 6 / 6.1 节）。
 
 核心价值不是「把文件塞进向量库」，而是把分散资料变成**有来源、有状态、有版本、有权限、有纠错路径**的资产。
 
@@ -156,7 +160,7 @@ omnilore audit-bundle            # 导出到 <数据目录>/ops/audit_bundles/
 flowchart TD
     A[开始] --> B{本地评估, 还是检查容器基础设施?}
     B -->|评估与开发| C[本地模式<br/>内存引擎, 零依赖]
-    B -->|检查容器编排| D[容器基础设施技术预览<br/>PostgreSQL 会启动, 业务运行时尚未接通]
+    B -->|检查容器编排| D[容器基础设施技术预览<br/>PostgreSQL 会启动, 业务数据仍走内存]
 
     C --> C1[pip install -e .]
     C1 --> C2[omnilore bootstrap]
@@ -168,7 +172,7 @@ flowchart TD
     D1 --> D2[docker compose up -d --build]
     D2 --> D3[docker compose exec mcp-gateway<br/>omnilore bootstrap]
     D3 --> D4[应用 sql/001 + sql/002<br/>compose 已自动挂载]
-    D4 --> D4B{{边界: mcp-gateway 仍用内存引擎<br/>DATABASE_URL 尚未接入业务运行时}}
+    D4 --> D4B{{边界: 业务数据仍走内存引擎<br/>DATABASE_URL 只接安全连接层，不是持久化}}
     D4B --> D5{{需要 n8n 编排模板?}}
     D5 -->|是| D6[docker compose --profile integrations up -d]
     D5 -->|否| D7[完成]
@@ -187,7 +191,11 @@ flowchart TD
 容器基础设施技术预览（**不是持久化运行模式**）
   cp .env.example .env  ->  docker compose up -d --build  ->  容器内 omnilore bootstrap
   基础设施: PostgreSQL 16 + pgvector + 已应用的 SQL    应用引擎: 仍为内存 RLSDatabaseEngine
-  边界: `DATABASE_URL` 已转发，但 CLI / MCP 尚未实例化 `AsyncpgRepository`，结构化状态仍随进程结束而清空
+  已具备: 设置 `DATABASE_URL` 时，MCP 会建立安全 PG 连接层 —— 强制连接角色非超级用户、
+          无 `BYPASSRLS`、是策略角色成员（否则拒绝启动），事务内 `SET LOCAL ROLE` + 注入 RLS GUC，
+          且「RLS 在这条连接上确实生效」已在真实 PostgreSQL 16.15 上以应用角色人工验证过一次
+  边界: 这条连接只做安全接入与启动自检，**尚未**承载业务读写；`AsyncpgRepository` 仍未被业务路径
+        实例化，结构化状态仍随进程结束而清空
   可选: docker compose --profile integrations up -d   # n8n 模板编排；尚未在真实 n8n 实例导入验证
 ```
 
@@ -195,9 +203,9 @@ flowchart TD
 |---|---|---|
 | 首启耗时 | 秒级 | 分钟级（需拉镜像） |
 | 外部服务 | 无 | Docker + PostgreSQL（数据库会启动） |
-| 业务运行时 | 内存 `RLSDatabaseEngine` | **仍为内存 `RLSDatabaseEngine`**；PostgreSQL 仓储层尚未接入 CLI / MCP |
-| 结构化数据持久化 | 否（进程生命周期） | **否**；当前只有 PostgreSQL DDL / seed / 独立探针，不能当作业务持久化证据 |
-| RLS 策略执行方式 | 同构内存模拟（`Simulated`） | 应用请求仍为同构内存模拟（`Simulated`）；SQL 策略另有一次人工 `Tested-real` 探针，`integration-rls` 待首次 CI 绿灯 |
+| 业务运行时 | 内存 `RLSDatabaseEngine` | **仍为内存 `RLSDatabaseEngine`**；设置 `DATABASE_URL` 时多一条**安全 PG 连接层**（安全角色 + 事务内 `SET LOCAL ROLE` + RLS GUC），它**不是**业务数据路径，PostgreSQL 仓储层**尚未**接入业务读写 |
+| 结构化数据持久化 | 否（进程生命周期） | **否**；当前只有 PostgreSQL DDL / seed / 独立探针与安全连接自检，不能当作业务持久化证据 |
+| RLS 策略执行方式 | 同构内存模拟（`Simulated`） | 应用请求仍为同构内存模拟（`Simulated`）；SQL 策略另有两次人工 `Tested-real` 探针（一次由策略角色直连、一次由应用角色走运行时连接），`integration-rls` 待首次 CI 绿灯 |
 | 适用 | 评估、开发、离线验证 | 检查镜像、SQL 初始化与可选集成模板；**不适合宣称长期持有或多人共享** |
 
 ---
@@ -287,7 +295,8 @@ omnilore/
 │   ├── bootstrap.py                                  # 新增：零密钥引导（CLI 与 MCP 共用）
 │   ├── textio.py                                     # 新增：跨平台规范 LF 文本 I/O
 │   ├── engine.py                                     # 核心引擎（约 3200 行，贡献请看 CONTRIBUTING）
-│   ├── pg_repository.py                              # asyncpg 参数化 SQL 仓储层（尚未接入 CLI / MCP 运行时）
+│   ├── pg_repository.py                              # asyncpg 参数化 SQL 仓储层（尚未接入 CLI / MCP 业务数据路径）
+│   ├── pg_runtime.py                                 # 安全 PG 运行时连接层：强制安全角色 + 事务内 SET LOCAL ROLE + RLS GUC
 │   ├── dashscope_client.py                           # 百炼 HTTP 适配层 + 模型配置（读 OMNILORE_* 环境变量）
 │   ├── embedding_provider.py                         # **R-04b** 向量来源抽象（dashscope / openai 兼容 / none）
 │   ├── runtime_index.py                              # **R-05m** 运行时索引（audit-bundle 跨进程的派生物）
@@ -298,14 +307,16 @@ omnilore/
 │   └── mcp_stdio_server.py                           # FastMCP JSON-RPC 2.0 Stdio 服务端
 ├── tools/
 │   ├── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
+│   ├── verify_rls_app_role.py                        # 用**应用角色**在真实 PG 上复现 RLS 三条（需真实 PG + 应用角色）
 │   └── verify_audit_bundle.py                        # 证据包探针：改 1 字节必须 mismatch + exit 3
-└── tests/                                            # 端到端验收测试，共 140 个用例（0 skip）
+└── tests/                                            # 端到端验收测试，共 145 个用例（0 skip）
     ├── _platform_support.py                          # 新增：宿主能力探测（symlink → junction 回退）
     ├── test_omnilore_phase0_acceptance.py           # Phase 0/1 专项（安全/RLS/幂等/恢复/模型门禁）10 项
     ├── test_full_omnilore_suite.py                  # Phase 0~3 + Ops 综合验收 9 项
     ├── test_w0_launch.py                             # W0 新增回归（引导/LF/版本/降级/合成正交/归因/权限/漂移/CLI/MCP 入口/文档宣称）34 项
     ├── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）+ R-05m（证据包导出）/ R-08b 补课（21 条策略注释）+ 跨进程导出 57 项
-    └── test_w6_provider_and_platform.py             # W6 新增：R-04b 向量来源抽象 / 四个环境变量真的生效 / 维度守卫 / 降级回归；R-11b 统一数据目录 + arm64 CI 守卫 30 项
+    ├── test_w6_provider_and_platform.py             # W6 新增：R-04b 向量来源抽象 / 四个环境变量真的生效 / 维度守卫 / 降级回归；R-11b 统一数据目录 + arm64 CI 守卫 30 项
+    └── test_pg_runtime_wiring.py                    # PG 运行时接线：内存引擎默认 + 拒绝超用户/BYPASSRLS 连接角色 5 项
 ```
 
 ---
@@ -317,7 +328,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 # 等价：make verify
 ```
 
-**140 个测试用例**，全部离线运行，不需要数据库或 API Key：
+**145 个测试用例**，全部离线运行，不需要数据库或 API Key：
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---|---|
@@ -326,15 +337,18 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | `test_w0_launch.py` | 34 项 | **W0 新增**：引导幂等与 token 复用、LF 规范化、版本号一致、零 Key 降级、供应商故障降级、CLI/MCP 路径解析一致、CLI 端到端、MCP stdio 入口握手、`OMNILORE_AUTO_BOOTSTRAP=0` 不废既有 token |
 | `test_w2_w3_roadmap.py` | 57 项 | 主权配置、诚实标注、贡献入口、真实 PG 集成 CI 配置守卫（`Implemented`，未真实运行）、证据包字段与篡改、21 条 RLS 策略注释、4 条跨进程导出 |
 | `test_w6_provider_and_platform.py` | 30 项 | provider 抽象、四个环境变量真实生效、维度守卫、降级回归、统一数据目录、arm64 CI 配置守卫 |
+| `test_pg_runtime_wiring.py` | 5 项 | PG 运行时接线（`Implemented`，离线 mock 钉住；真实 PG 证据见 `tools/verify_rls_app_role.py`）：默认内存引擎、无 DATABASE_URL 不接 PG、拒绝超用户/BYPASSRLS 连接角色 |
 
-> ⚠️ **这 140 个测试全部跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上。**
+> ⚠️ **这 145 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
 > 它与 PostgreSQL RLS **同构**，但**不是真实 PostgreSQL** —— 所以它们证明的是**逻辑正确性**，
 > 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS 相关能力一律标注 `Simulated` ——
-> **唯一例外**是「真实 PostgreSQL RLS 策略与跨空间读拦截」：它有 2026-10-24 在真实
-> PG 16.15 上的一次性人工验证（3 探针 PASS），故标 `Tested-real`。
+> **两条例外**（都是真实 PG 16.15 上的**人工一次性**验证，均**非 CI**）：
+> ①「真实 PostgreSQL RLS 策略与跨空间读拦截」（2026-10-24，3 探针 PASS）；
+> ②「PostgreSQL 安全连接层与 RLS 生效验证」（2026-10-25，以应用角色 `omnilore_app` 走
+> 运行时连接层，3 探针 PASS）—— **它不证明业务数据已持久化**，业务读写仍走内存引擎。
 > **持续证据已交给 CI**：`.github/workflows/ci.yml` 的 `integration-rls` job 每次 push 都会
-> 起一个真实 PG 并重跑同三条探针 —— 但该 job **尚未经过首次真实运行验证**，在它首次绿灯之前，
-> 本页仍以「一次性人工证据」为准。详见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 第 6 节。
+> 起一个真实 PG 并重跑①的三条探针 —— 但该 job **尚未经过首次真实运行验证**，在它首次绿灯之前，
+> 本页仍以「一次性人工证据」为准。详见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 第 6 / 6.1 节。
 > **我们公开边界，因为我们做安全。**
 
 ### 支持架构
@@ -344,7 +358,7 @@ OmniLore 支持 **x86_64 与 arm64** 两种 CPU 架构，验证方式不同，�
 | 架构 | 状态 | 验证方式 |
 |---|---|---|
 | `x86_64`（Linux / Windows；macOS Intel 为兼容目标） | `Tested-real`（Linux / Windows） | CI 离线矩阵为 `ubuntu-latest` × `windows-latest` × Python 3.11/3.12；当前没有 macOS job，**不得把 macOS 写成已验证** |
-| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Implemented` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 140 个离线用例** + `ruff` + bootstrap/demo 冒烟。**配置已就位、尚未经过首次真实运行** —— 首次绿灯前不宣称「arm64 已验证」 |
+| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Implemented` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 145 个离线用例** + `ruff` + bootstrap/demo 冒烟。**配置已就位、尚未经过首次真实运行** —— 首次绿灯前不宣称「arm64 已验证」 |
 
 > 为什么 arm64 单独一个 job 而不是并进矩阵：`integration-rls` 刻意留在 x86（真实 PostgreSQL
 > service container）。在 arm64 上同时引入「新架构 + 新服务容器」两个变量，一旦红了分不清是谁的锅。
@@ -360,6 +374,7 @@ make verify-sync       # Obsidian 同步：受保护字段可配 + 冲突副本�
 make verify-honesty    # 诚实标注守卫：三处一致
 make verify-audit      # 证据包：改 CAS 里 1 个字节 → mismatch + 退出码 3
 make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL，缺环境即报「未验证」）
+python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复现 RLS 三条（需要真实 PG + 应用角色）
 ```
 
 > **关于符号链接断言（已做到 0 skip）**：AC-S05 需要构造一个指向 Vault 之外的链接，
@@ -386,20 +401,23 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 > | `Implemented` | 代码已实现，仓库内有自动化用例覆盖（跑在进程内内存引擎上） |
 > | `Tested-real` | CI 里存在**真实外部依赖**上的证据：真实子进程、真实跨平台文件系统、真实第三方解析库 |
 > | `Simulated` | 只在与 PostgreSQL RLS **同构的内存仿真引擎**上验证；真实 PostgreSQL **没有 CI 证据** |
-> | `Tested-real`（RLS 例外） | 2026-10-24 在真实 PG 16.15 上**人工**跑通三条探针（策略挂载 / 跨空间不可见 / 授权后可见）；CI 门禁已接入 `integration-rls` job（**待首次绿灯**），见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 第 6 节 |
+> | `Tested-real`（真实 PG 例外） | 2026-10-24 / 2026-10-25 在真实 PG 16.15 上**人工**跑通的三条探针（前者：策略挂载 / 跨空间不可见 / 授权后可见；后者：以应用角色走运行时连接层的未授权 0 行 / 授权后可见 / 连接角色安全）。两者都是**一次性人工、非 CI**；CI 门禁已接入 `integration-rls` job（**待首次绿灯**），见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 第 6 / 6.1 节 |
 > | `Planned` | 尚未实现，或仅有模板、未经过自动化验证 |
 >
 > **当前统计（三处一致，由测试守护）：**
-> `Implemented` 11 条 ｜ `Tested-real` 7 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **31 条**。
+> `Implemented` 11 条 ｜ `Tested-real` 8 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
 >
-> **测试跑在什么上面（重要）**：本项目的全部测试用例都跑在
+> **测试跑在什么上面（重要）**：本项目的 140 个业务用例都跑在
 > `omnilore.engine.RLSDatabaseEngine`（**内存仿真引擎**）上 —— 它与 PostgreSQL RLS
-> 策略同构，但**不是真实 PostgreSQL**。因此凡是依赖真实 PG 的能力，一律标注
+> 策略同构，但**不是真实 PostgreSQL**；新增的 5 个 PG 运行时接线用例同样是**离线 mock**，
+> 不连真实 PG。因此凡是依赖真实 PG 的能力，一律标注
 > `Simulated`，并在 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 里给出
 > **你可以自己复跑的验证命令**。
-> **唯一例外**是「真实 PostgreSQL RLS 策略与跨空间读拦截」：它有 2026-10-24 在真实
-> PG 16.15 上的**一次性人工**验证（3 探针 PASS），故标 `Tested-real` —— 持续取证已交给
-> `integration-rls` job，但它**尚未经过首次真实运行验证**，首次绿灯前仍只能算人工证据。信任边界与「防不住什么」见
+> **两条例外**（均为真实 PG 16.15 上的**一次性人工**验证、均**非 CI**）：
+> ①「真实 PostgreSQL RLS 策略与跨空间读拦截」（2026-10-24，3 探针 PASS）；
+> ②「PostgreSQL 安全连接层与 RLS 生效验证」（2026-10-25，以应用角色走运行时连接层，
+> 3 探针 PASS）—— **② 不证明业务数据已持久化**，业务读写仍走内存引擎。持续取证已交给
+> `integration-rls` job（只覆盖①），但它**尚未经过首次真实运行验证**，首次绿灯前仍只能算人工证据。信任边界与「防不住什么」见
 > [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)。
 >
 > **我们公开边界，因为我们做安全。**
@@ -454,6 +472,7 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 - **[Implemented]** **ARM64 架构验证（R-11b）**：CI 新增独立 `arm64` job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner），跑**同一套离线测试** + `ruff` + bootstrap/demo 冒烟；`integration-rls` 刻意留在 x86（不在新架构上再叠服务容器这个变量）。**配置已就位、但尚未经过首次真实运行**，故标 `Implemented`；首次绿灯后才有持续证据。
 - **[Implemented]** **统一数据目录解析（R-11b）**：数据目录只有一个解析入口 `omnilore.pathutil.resolve_data_dir`（CLI / MCP 服务端 / 证据包 / 运行时索引全部基于同一根），`ops/index`、`ops/bootstrap.json`、`ops/audit_bundles` 都在同一棵树下；由静态守卫禁止任何模块自己 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR`。
 - **[Implemented]** **真实 PostgreSQL 集成 CI**：`.github/workflows/ci.yml` 新增独立 job `integration-rls` —— 用 `pgvector/pgvector:0.8.0-pg16` 起一个**干净的真实 PostgreSQL 16**，跑 `tools/verify_rls_pg.py` 的三条探针，并把 exit 2（未验证）/ exit 3（结论为否）**逐码**转成 job 失败（不许 `continue-on-error`，不许当跳过）。**尚未经过首次真实运行验证**，故标 `Implemented` 而非 `Tested-real`；首次绿灯后 RLS 条目才具备持续取证。
+- **[Tested-real]** **PostgreSQL 安全连接层与 RLS 生效验证**：`omnilore/pg_runtime.py` 的 `PgRuntime` 在设置 `DATABASE_URL` 时由 MCP stdio 服务端建立连接，并强制校验连接角色**非超级用户、无 `BYPASSRLS`、是策略目标角色（`omnilore_gateway` / `omnilore_worker`）成员**，任一不满足即**拒绝启动**（fails closed —— 这类角色会静默绕过 RLS，比连不上更危险）；事务内 `SET LOCAL ROLE` 切到策略角色，并以 `app.*` GUC 注入请求上下文，注入失败即中止事务。证据：2026-10-25 在**真实 PostgreSQL 16.15** 上以应用角色 `omnilore_app` 人工跑通三条探针（未授权空间 0 行 / 授权后 1 行以排除空表假阳性 / 连接角色 `superuser=false, bypassrls=false`），超级用户 `omnilore_migrator` 连接被拒绝启动。**这是人工一次性验证、非 CI**（可复跑：`python tools/verify_rls_app_role.py`，需真实 PG + 应用角色）。**边界（很重要）**：这条连接只做安全接入与启动自检，**业务数据层仍走内存 `RLSDatabaseEngine`，结构化状态不会持久化到 PostgreSQL，也不能据此宣称多人共享**；把它读成「已接通 PostgreSQL 持久化」是误读。
 
 ### 其他边界明确的能力
 
@@ -508,7 +527,7 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 | `OMNILORE_EMBEDDING_PROVIDER` | 可选 | 向量来源（`Implemented`，见状态矩阵）：`dashscope`（默认）/ `openai`（任意 OpenAI 兼容端点，含 **Ollama**）/ `none`（显式只用 BM25） |
 | `OMNILORE_EMBEDDING_BASE_URL` | 可选 | `openai` 的端点，如 `http://localhost:11434/v1`（Ollama）。本地回环地址**不需要** API Key |
 | `OMNILORE_EMBEDDING_API_KEY` / `OPENAI_API_KEY` | 可选 | `openai` 的鉴权（前者优先）；`OMNILORE_PRIMARY_MODEL` / `_ESCALATED_MODEL` / `_EMBEDDING_MODEL` / `_EMBEDDING_DIM` **现已真正生效**，`omnilore bootstrap` 会回显生效值 |
-| `DATABASE_URL` | 容器编排会转发 | PostgreSQL 连接串；**当前 CLI / MCP 运行时尚未读取它或实例化 `AsyncpgRepository`**，不能据此认定业务状态已持久化 |
+| `DATABASE_URL` | 容器编排会转发 | PostgreSQL 连接串；设置后 MCP 会建立**安全 PG 连接层**（连接角色必须非超级用户、无 `BYPASSRLS`、是策略角色成员，否则拒绝启动）。但它**尚未**接入业务数据层 —— 业务读写仍走内存引擎，**不能据此认定业务状态已持久化** |
 | `OMNILORE_PROTECTED_FRONTMATTER` | 可选 | 受保护的 frontmatter 字段白名单（逗号分隔）。`none` = **整体关闭保护**（`doc_id` 除外，它是身份锚点）。默认 9 个全保护 |
 | `OMNILORE_CONFLICT_DIR` | 可选 | 冲突副本隐藏目录，默认 `.omnilore/conflicts`（点号开头 = **Obsidian 默认忽略**；Windows 资源管理器仍可见，NTFS 不因点号隐藏目录）。必须是 vault 内相对路径 |
 | `OMNILORE_TELEMETRY` | 可选 | 遥测开关，默认 `0`（本版本尚未实现遥测） |
@@ -523,7 +542,7 @@ make verify-rls-pg     # 真实 PostgreSQL 探针（需要 psql + DATABASE_URL�
 | [`docs/ROADMAP_STATUS.md`](docs/ROADMAP_STATUS.md) | 8 周首发窗口的公开进度、待验证项与 Go/No-Go 门禁 |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | 安全/审计：信任边界、**能防什么**、**防不住什么**（含跨系统事务边界） |
 | [`docs/01_Product_Requirements_Document_v2.3.md`](docs/01_Product_Requirements_Document_v2.3.md) | 想快速了解需求范围：`FR-01`~`FR-19` 矩阵与已锁定决议 |
-| [`docs/02_Architecture_and_Engineering_Design_v2.3.md`](docs/02_Architecture_and_Engineering_Design_v2.3.md) | 后端/安全：权限交集、`(space_id, category)` RLS、15 张表、Saga、同步协议（RLS 行为只在内存引擎上验证；真实 PG **没有**持续 CI 证据 —— 现有的一次性人工证据与待首次绿灯的 `integration-rls` job 见 `docs/FEATURE_STATUS.md` 第 6 节） |
+| [`docs/02_Architecture_and_Engineering_Design_v2.3.md`](docs/02_Architecture_and_Engineering_Design_v2.3.md) | 后端/安全：权限交集、`(space_id, category)` RLS、15 张表、Saga、同步协议（RLS 行为只在内存引擎上验证；真实 PG **没有**持续 CI 证据 —— 现有的两次人工一次性证据与待首次绿灯的 `integration-rls` job 见 `docs/FEATURE_STATUS.md` 第 6 / 6.1 节） |
 | [`docs/03_User_Stories_and_Scenarios_v2.3.md`](docs/03_User_Stories_and_Scenarios_v2.3.md) | 角色化的用户故事与 `Given/When/Then` 验收标准 |
 | [`docs/04_Test_Plan_and_Verification_Report_v2.3.md`](docs/04_Test_Plan_and_Verification_Report_v2.3.md) | QA/审计：追踪矩阵与**内存仿真的边界** |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | 想了解许可证、版本、遥测（`Planned`）、8 周窗口、项目命名与多存储后端冻结这六项拍板 |
@@ -563,16 +582,22 @@ git commit -s -m "fix(storage): ..."   # -s 追加 DCO Signed-off-by，必填
 
 ## 已知限制（诚实披露）
 
-1. **当前 CLI / MCP 业务运行时只有内存引擎（内存仿真）。** `RLSDatabaseEngine` 与 PostgreSQL RLS 策略同构，
+1. **当前 CLI / MCP 的业务数据层只有内存引擎（内存仿真）。** `RLSDatabaseEngine` 与 PostgreSQL RLS 策略同构，
    但**不是真实 PostgreSQL**，且进程退出后结构化状态清空；磁盘上的原始资产与 Markdown
-   知识页会保留。仓库虽提供 `AsyncpgRepository`、SQL、PostgreSQL 容器与 `DATABASE_URL` 转发，
-   但运行时尚未实例化该仓储层；**容器模式目前也不能作为持久化、多人共享方案**。
-2. **真实 PG RLS 的持续证据还在等首次 CI 绿灯（目前只有一次人工验证）。** 140 个测试全部跑在内存仿真引擎上；
-   依赖真实 PG 的能力一律标 `Simulated`。**唯一例外**是「真实 PostgreSQL RLS 策略与跨空间
-   读拦截」：2026-10-24 在真实 PG 16.15 上人工跑通 3 条探针（策略挂载 / 跨空间不可见 /
-   授权后可见），故标 `Tested-real`。`integration-rls` job 已把同一组探针接进 CI，
-   但该 job **尚未经过首次真实运行验证**；探针也未覆盖 profile 维度、
-   写侧策略与组织树继承。想自己复跑：`make verify-rls-pg`（需要真实 PG 的**空库**）。
+   知识页会保留。设置 `DATABASE_URL` 时，MCP 会额外建立一条**安全 PG 连接层**（非超级用户、无
+   `BYPASSRLS` 的应用角色 + 事务内 `SET LOCAL ROLE` + RLS GUC 注入，超用户连接拒绝启动），
+   但它只做安全接入与启动自检，**尚未**承载业务读写 —— 仓库虽提供 `AsyncpgRepository`、SQL、
+   PostgreSQL 容器与 `DATABASE_URL` 转发，业务路径仍未实例化该仓储层；
+   **容器模式目前也不能作为持久化、多人共享方案**。
+2. **真实 PG RLS 的持续证据还在等首次 CI 绿灯（目前只有人工验证）。** 业务测试跑在内存仿真引擎上；新增的 PG 运行时接线测试离线 mock，也不连真实 PG；
+   依赖真实 PG 的能力一律标 `Simulated`。**两条例外**（都是人工一次性证据，**不是 CI**）：
+   ①「真实 PostgreSQL RLS 策略与跨空间读拦截」—— 2026-10-24 在真实 PG 16.15 上人工跑通
+   3 条探针（策略挂载 / 跨空间不可见 / 授权后可见）；②「PostgreSQL 安全连接层与 RLS 生效
+   验证」—— 2026-10-25 在真实 PG 16.15 上以应用角色 `omnilore_app` 人工跑通 3 条探针
+   （未授权 0 行 / 授权后可见 / 连接角色非超用户无 `BYPASSRLS`），超用户连接被拒。
+   `integration-rls` job 已把①的同一组探针接进 CI，但该 job **尚未经过首次真实运行验证**；
+   两组探针都未覆盖 profile 维度、写侧策略与组织树继承。想自己复跑：`make verify-rls-pg`
+   （需要真实 PG 的**空库**）与 `python tools/verify_rls_app_role.py`（需要真实 PG + 应用角色）。
 3. **符号链接断言依赖宿主能力**：优先用真实 symlink，Windows 无特权时回退到目录联接
    （junction）。若宿主两者都造不出来，2 条 AC-S05 断言会被显式 skip —— 那是宿主能力
    限制，非平台缺陷（当前主流平台均已做到 0 skip）。

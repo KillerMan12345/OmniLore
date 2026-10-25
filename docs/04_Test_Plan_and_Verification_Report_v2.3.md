@@ -5,7 +5,8 @@
 > **测试环境：** Linux (Python 3.11.2, `unittest.IsolatedAsyncioTestCase`, `PyYAML`, `Pillow`, `pdfplumber`, `pypdf`)  
 > **编写原则：** 100% 基于事实记录，明确区分“在当前 Linux 运行时中物理执行的测试”与“在本地 Docker + 云端 API 环境中联调的事项”
 
-> **当前状态补充：** 本报告保留 2026-10-22 的 19 项验收基线；当前仓库全量套件已扩展为 140 项。
+> **当前状态补充：** 本报告保留 2026-10-22 的 19 项验收基线；当前仓库全量套件已扩展为 145 项
+> （其中 5 项 `test_pg_runtime_wiring.py` 为 PG 运行时接线的离线 mock 用例，不连真实 PG）。
 > 最新能力证据见 [`FEATURE_STATUS.md`](FEATURE_STATUS.md)，公开路线图进度见
 > [`ROADMAP_STATUS.md`](ROADMAP_STATUS.md)。新增用例不会反向改写本报告的历史执行日期。
 
@@ -30,7 +31,7 @@
 
 | 外部组件 | 当前自动化测试中的仿真方式 | 宿主机生产联调验证方式 |
 |---|---|---|
-| **PostgreSQL 16 (`pgvector` + `ltree` + RLS)** | `RLSDatabaseEngine` 在内存中模拟权限语义；另有一次人工真实 PG 三探针，只覆盖策略挂载与跨空间读过滤 | `tools/verify_rls_pg.py` 可在空库独立应用 `sql/001` + `sql/002` 并探测策略。**当前 CLI / MCP 尚未实例化 `AsyncpgRepository`，`DATABASE_URL` 也未接入应用运行时；启动 compose 不等于业务请求已走 PostgreSQL。** |
+| **PostgreSQL 16 (`pgvector` + `ltree` + RLS)** | `RLSDatabaseEngine` 在内存中模拟权限语义；另有两次人工真实 PG 三探针（2026-10-24 策略探针；2026-10-25 以应用角色走运行时连接层的探针），都只覆盖策略挂载与跨空间读过滤 | `tools/verify_rls_pg.py` 可在空库独立应用 `sql/001` + `sql/002` 并探测策略；`tools/verify_rls_app_role.py` 可用**应用角色**在真实 PG 上复现 RLS 三条。**设置 `DATABASE_URL` 时 MCP 会建立安全 PG 连接层（安全角色 + `SET LOCAL ROLE` + RLS GUC），但 CLI / MCP 业务路径尚未实例化 `AsyncpgRepository` —— 启动 compose 不等于业务请求已走 PostgreSQL，也不等于数据已持久化。** |
 | **阿里云百炼大模型 API (`DashScope`)** | 未设置 `DASHSCOPE_API_KEY` 时走确定性分类/编译与本地向量；远程路径用假 transport 验证请求形状与降级 | 如需自行联调，必须把 Key 载入**进程环境变量**（本地运行不自动读取 `.env`）。仓库当前没有真实网络调用证据，故不能把配置步骤写成已验证结果 |
 
 ## 2. PRD 第 14 章量化验收指标追踪矩阵（Traceability Matrix）

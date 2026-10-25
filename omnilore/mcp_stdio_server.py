@@ -312,12 +312,43 @@ def _bootstrap_or_explain(engine: OmniLoreEngine, data_root: Path) -> None:
         _stderr("[omnilore] 建议改用 `omnilore bootstrap` 显式生成并妥善保存该 token。")
 
 
+async def _attach_pg_runtime(engine: OmniLoreEngine) -> None:
+    """若设置了 DATABASE_URL，以安全角色接入真实 PostgreSQL 运行时（fails closed）。
+
+    接入**红线**：PostgreSQL 超级用户与 BYPASSRLS 角色默认绕过 RLS。应用若以这类
+    角色连接，结果不是报错而是「权限隔离完全失效」的假安全。因此这里连接后立即
+    校验连接角色必须非超级用户、无 BYPASSRLS、且是策略目标角色
+    （omnilore_gateway/omnilore_worker）的成员；任一不满足即拒绝启动。
+
+    说明：本次钉住的是**安全连接 + RLS 生效**这条红线。engine 的业务数据层
+    （内存 RLSDatabaseEngine）迁移到真实 SQL 是独立的大工程，不在此处假装完成；
+    详见 ``omnilore/pg_runtime.py`` 的「接入范围」docstring。
+    """
+    pg_url = os.environ.get("DATABASE_URL", "").strip()
+    if not pg_url:
+        return
+    from .pg_runtime import PgRuntime, PgRuntimeError
+
+    try:
+        pg = await PgRuntime(pg_url).connect()
+    except PgRuntimeError as exc:
+        _stderr(f"[omnilore] DATABASE_URL 已设置，但安全连接失败：{exc}")
+        _stderr("[omnilore] 拒绝启动（fails closed）：应用不得以会绕过 RLS 的角色连接 PostgreSQL。")
+        raise
+    _stderr(
+        f"[omnilore] DATABASE_URL 已设置：以安全角色连接真实 PostgreSQL"
+        f"（RLS 生效，strategy_role={pg.strategy_role}）。"
+    )
+    engine.pg_runtime = pg  # 供检索/审计等后续真实 SQL 接入点使用；engine 数据层仍内存
+
+
 async def main_stdio() -> None:
     # Same resolver as the CLI (`omnilore.pathutil.resolve_data_dir`). Do NOT inline
     # `Path(os.environ[...])` here: bootstrap identity lives under this directory and
     # any drift silently produces a second, useless token. See QA finding P1-1.
     data_root = resolve_data_dir()
     engine = OmniLoreEngine(data_root)
+    await _attach_pg_runtime(engine)
     _bootstrap_or_explain(engine, data_root)
     server = MCPJsonRpcServer(OmniLoreMCPGateway(engine))
     for line in sys.stdin:

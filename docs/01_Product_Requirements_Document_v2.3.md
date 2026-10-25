@@ -170,9 +170,11 @@ OmniLore 是一个以原始证据为基础、以可审阅的 Markdown 知识页�
 
 诚实披露：以下边界在本次 alpha 发布中**尚未**消除。
 
-1. **当前 CLI / MCP 应用运行时只有内存引擎。** `RLSDatabaseEngine` 与 PostgreSQL RLS 策略同构，
-   但进程退出后状态清空。仓库虽有 `AsyncpgRepository`、SQL、PostgreSQL 容器与 `DATABASE_URL`
-   转发，入口尚未实例化该仓储层；因此容器模式当前也不提供业务状态持久化。
+1. **当前 CLI / MCP 的业务数据层只有内存引擎。** `RLSDatabaseEngine` 与 PostgreSQL RLS 策略同构，
+   但进程退出后状态清空。设置 `DATABASE_URL` 时会建立一条**安全 PG 连接层**（连接角色必须非
+   超级用户、无 `BYPASSRLS`、是策略角色成员，否则拒绝启动），但它只做连接与启动自检，
+   **尚未**承载业务读写 —— 仓库虽有 `AsyncpgRepository`、SQL、PostgreSQL 容器与 `DATABASE_URL`
+   转发，业务路径尚未实例化该仓储层；因此容器模式当前也不提供业务状态持久化。
 2. **部分断言依赖宿主能力。** 符号链接防御的断言依赖宿主能否创建 symlink；
    无权限的宿主上会**显式 skip**（`tests/_platform_support.py`），非平台缺陷。
 3. **向量质量依赖外部供应商。** 未配置 `DASHSCOPE_API_KEY` 时降级为关键词检索，

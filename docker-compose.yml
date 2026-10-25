@@ -45,8 +45,12 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      # PostgreSQL 连接串会被转发进容器，但当前 CLI / MCP 入口尚未读取它来实例化
-      # AsyncpgRepository；业务运行时仍是内存 RLSDatabaseEngine。不要把转发存在误写成已接通。
+      # PostgreSQL 连接串会被转发进容器，MCP stdio 服务端会读它建立**安全连接层**：
+      # 连接角色必须非超级用户、无 BYPASSRLS、是策略角色成员，否则拒绝启动（fails closed）。
+      # 注意：omnilore_gateway 在 sql/001 里是 NOLOGIN，不能直接登录 —— 生产/联调请把
+      # DATABASE_URL 的用户换成应用角色（如 omnilore_app）并在事务内 SET LOCAL ROLE 切换。
+      # 业务数据层仍是内存 RLSDatabaseEngine，AsyncpgRepository 未被业务路径实例化 ——
+      # 不要把「连上了」误写成「业务数据已持久化」。
       DATABASE_URL: ${DATABASE_URL:-postgresql://omnilore_gateway:${GATEWAY_DB_PASSWORD:-change_me_local_dev_only}@postgres:5432/omnilore}
       # 必填：数据目录（容器内路径，挂载见 volumes）
       OMNILORE_DATA_DIR: /data/OmniLore_Data
