@@ -314,6 +314,44 @@ class TestCanonicalTextIO(unittest.IsolatedAsyncioTestCase):
         for md in md_files:
             self.assertNotIn(b"\r\n", md.read_bytes(), f"{md} must be LF-only")
 
+    async def test_repository_text_files_are_lf_only(self) -> None:
+        """仓库**自身**的文本文件也必须是 LF —— 不只是程序生成的文件。
+
+        为什么这条值得单独守：`write_text_canonical()` 只保护 OmniLore 写出的文件，
+        保护不了「有人用 `Path.write_text()` 顺手改了一下文档」。Windows 上
+        `Path.write_text()` 会把 `\\n` 翻译成 `\\r\\n`，于是工作区悄悄变成 CRLF：
+        本文件被脚本化编辑时就真实发生过一次（8 个文件被改成 CRLF，测试全绿没抓到）。
+        `.gitattributes` 会在 commit 时归一化，所以**仓库**是干净的 —— 但工作区不干净，
+        而 `documents.file_hash` 按**字节**算，工作区字节与实际被哈希的字节必须一致。
+
+        变异验证（已实测）：把任一 `.md` 改成 CRLF → 本用例变红并点名该文件。
+        """
+        repo_root = Path(__file__).resolve().parent.parent
+        # 与 `.gitattributes` 里声明 `eol=lf` 的扩展名保持一致
+        suffixes = {".md", ".py", ".sql", ".yml", ".yaml", ".toml", ".json", ".cfg", ".ini"}
+        skip_dirs = {
+            ".git", ".venv", ".ruff_cache", "deliverables", "_execution_logs",
+            ".workbuddy", ".workbuddy-ai", "__pycache__",
+        }
+        scanned = 0
+        offenders: list[str] = []
+        for dirpath, dirnames, filenames in os.walk(repo_root):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+            for name in filenames:
+                path = Path(dirpath) / name
+                if path.suffix not in suffixes:
+                    continue
+                try:
+                    raw = path.read_bytes()
+                except OSError:  # 断链符号链接等宿主特例：不是本守卫要管的东西
+                    continue
+                scanned += 1
+                if b"\r\n" in raw:
+                    offenders.append(path.relative_to(repo_root).as_posix())
+        # 防空转：扫描范围失效时必须响亮失败，而不是「0 个文件 → 通过」
+        self.assertGreaterEqual(scanned, 40, f"只扫到 {scanned} 个文本文件，扫描范围明显失效")
+        self.assertEqual(offenders, [], f"以下文件含 CRLF（应为 LF）：{offenders}")
+
 
 class TestVersionConsistency(unittest.TestCase):  # sync: no async deps
     """PEP 440 internal version vs. advertised release label."""
@@ -783,6 +821,9 @@ class TestMcpStdioEntrypoint(unittest.TestCase):
         """
         env = dict(os.environ)
         env["DASHSCOPE_API_KEY"] = ""
+        # 子进程 stdout 与这里的解码都钉成 UTF-8：否则 en-US Windows（locale=cp1252）上
+        # 子进程打印中文会 UnicodeEncodeError，测试就变成「只在某些代码页下通过」。
+        env["PYTHONIOENCODING"] = "utf-8"
         env.update(env_extra)
         stdin = "".join(json.dumps(item) + "\n" for item in payload)
         proc = subprocess.run(
@@ -907,6 +948,135 @@ class TestMcpStdioEntrypoint(unittest.TestCase):
         self.assertNotIn("error_code", payload, f"既有 token 必须仍能鉴权，实际：{payload}")
         self.assertEqual(payload["retrieval_mode"], "keyword_only")
         self.assertNotEqual(payload["degraded_reason"], "")
+
+
+class TestNonUtf8OutputCodePage(unittest.TestCase):
+    """T1 根因守卫：进程的 stdio 编码**不是** UTF-8 时，产品不许崩。
+
+    为什么这组必须存在：`windows-latest` 的两个 CI job 曾在同一套离线用例上失败，
+    而 ubuntu / arm64 / 开发者本机 Windows 全绿。根因不是逻辑错误，而是**代码页**——
+    stdout 被重定向到管道/文件时，CPython 用 `locale.getpreferredencoding(False)` 编码：
+    en-US Windows 是 **cp1252**（一个汉字都编不了），zh-CN 是 cp936（能编中文，所以本机一直绿），
+    ubuntu 是 UTF-8。于是子进程里任何一句中文 `print()` 都会抛::
+
+        UnicodeEncodeError: 'charmap' codec can't encode characters ...
+
+    实测复现（修复前）：`PYTHONIOENCODING=cp1252 python -m unittest discover ...`
+    → 8 failures + 1 error，失败的全是**起子进程**的用例（MCP stdio / audit-bundle /
+    跨进程证据包 / `tools/verify_rls_pg.py`）。修复后同一命令全绿。
+
+    修复落在两处：产品入口 `pin_utf8_std_streams()`（UTF-8 + `backslashreplace`，
+    JSON 仍是合法 JSON），以及测试自己把子进程的 `PYTHONIOENCODING` 钉成 UTF-8。
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.data_dir = Path(self._tmp.name) / "OmniLore_Data"
+        self.repo_root = Path(__file__).resolve().parent.parent
+        self._saved_key = os.environ.pop("DASHSCOPE_API_KEY", None)
+
+    def tearDown(self) -> None:
+        if self._saved_key is not None:
+            os.environ["DASHSCOPE_API_KEY"] = self._saved_key
+        else:
+            os.environ.pop("DASHSCOPE_API_KEY", None)
+        self._tmp.cleanup()
+
+    def test_cli_does_not_crash_on_a_non_utf8_code_page(self) -> None:
+        """`PYTHONIOENCODING=cp1252` 下 `python -m omnilore version` 仍必须 exit 0。
+
+        变异验证：删掉 `omnilore/cli.py` 里 `main()` 开头那行 `pin_utf8_std_streams()`
+        → 子进程以 `UnicodeEncodeError` 崩掉、返回码非 0，本用例变红（已实测）。
+        """
+        env = dict(os.environ)
+        env["DASHSCOPE_API_KEY"] = ""
+        # 故意用 cp1252 冒充 en-US Windows 的 locale —— 这正是 CI runner 的实际情况
+        env["PYTHONIOENCODING"] = "cp1252"
+        env["OMNILORE_DATA_DIR"] = str(self.data_dir)
+        proc = subprocess.run(
+            [sys.executable, "-m", "omnilore", "version"],
+            cwd=str(self.repo_root),
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        stdout = proc.stdout.decode("utf-8", "replace")
+        stderr = proc.stderr.decode("utf-8", "replace")
+        self.assertEqual(
+            proc.returncode, 0,
+            f"非 UTF-8 代码页下 CLI 崩了（这正是 windows-latest 变红的方式）：\n{stdout}\n{stderr}",
+        )
+        self.assertNotIn("UnicodeEncodeError", stderr + stdout)
+        self.assertIn("v0.3.0-alpha", stdout, "版本号没打印出来，说明输出在写出前就丢了")
+        # 产品已把 stdout 钉成 UTF-8：中文必须**完整**回来，不能退化成 '?' 或空
+        self.assertIn("预发布版本", stdout, "UTF-8 输出应完整保留中文，而不是被替换掉")
+
+    def test_mcp_stdio_frames_stay_valid_json_on_a_non_utf8_code_page(self) -> None:
+        """MCP 是线协议：cp1252 代码页下返回的帧仍必须是合法 JSON 且中文完好。
+
+        这条比 CLI 那条更严格 —— 协议帧一旦被 `?` 污染，客户端拿到的就是坏数据。
+        因此修复用的是 `backslashreplace`（`\\uXXXX` 仍是合法 JSON）而不是 `replace`。
+        为了让「中文是否完好」真的可断言，这里让检索**回显**一个中文 query。
+
+        变异验证：把 `pin_utf8_std_streams()` 的 `errors="backslashreplace"` 改成
+        `errors="strict"`（或删掉入口调用）→ 子进程崩、帧解析失败，本用例变红。
+        """
+        buf = io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(io.StringIO()):
+            rc_bootstrap = main(["bootstrap", "--data-dir", str(self.data_dir), "--json"])
+        self.assertEqual(rc_bootstrap, 0, "引导失败，无法取到 token")
+        token = json.loads(buf.getvalue()[buf.getvalue().index("{"):])["token"]
+
+        query = "分布式锁与租约续期规范"
+        env = dict(os.environ)
+        env["DASHSCOPE_API_KEY"] = ""
+        env["PYTHONIOENCODING"] = "cp1252"
+        env["OMNILORE_DATA_DIR"] = str(self.data_dir)
+        stdin = "".join(
+            # ensure_ascii=False：让请求帧里出现**真正的 UTF-8 中文**（而不是 \uXXXX 转义），
+            # 这样服务端的 stdin 解码路径也被覆盖 —— 否则输入侧坏掉也测不出来。
+            json.dumps(item, ensure_ascii=False) + "\n"
+            for item in (
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize"},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "search_knowledge",
+                        "arguments": {"token": token, "query": query},
+                    },
+                },
+            )
+        )
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from omnilore.mcp_stdio_server import main_stdio_sync; main_stdio_sync()",
+            ],
+            input=stdin.encode("utf-8"),
+            cwd=str(self.repo_root),
+            env=env,
+            capture_output=True,
+            check=False,
+            timeout=120,
+        )
+        stderr = proc.stderr.decode("utf-8", "replace")
+        self.assertNotIn("UnicodeEncodeError", stderr, f"MCP 服务端在写出响应时崩了：\n{stderr}")
+        # 严格 UTF-8 解码：若服务端按 cp1252 写出中文，这里会直接抛
+        raw = proc.stdout.decode("utf-8")
+        lines = [line for line in raw.splitlines() if line.strip()]
+        self.assertGreaterEqual(len(lines), 3, f"没有拿到三帧响应：\n{raw!r}\n{stderr}")
+        frames = [json.loads(line) for line in lines]  # 解析失败会直接抛 → 用例红
+        self.assertEqual(frames[0]["result"]["serverInfo"]["name"], "omnilore-mcp-gateway")
+        tools = frames[1]["result"]["tools"]
+        self.assertGreaterEqual(len(tools), 7, "tools/list 的帧不完整")
+        payload = json.loads(frames[2]["result"]["content"][0]["text"])
+        self.assertEqual(payload["query"], query, "中文 query 没有原样回显 —— 协议内容被代码页污染")
+        self.assertEqual(payload["retrieval_mode"], "keyword_only")
 
 
 if __name__ == "__main__":

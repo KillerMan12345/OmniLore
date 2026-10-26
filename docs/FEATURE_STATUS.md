@@ -55,9 +55,10 @@
 - 它没有真实的 MVCC、锁、事务隔离级别与 `pgvector` 索引行为；
 - 进程退出后结构化状态清空（磁盘上的原始资产与 Markdown 知识页保留）。
 
-所以：**「147 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已验证」。**
-其中 140 个业务用例跑在内存仿真引擎上（另有 2 条守卫只做静态文本判定、不碰引擎），
-新增的 5 个 `test_pg_runtime_wiring.py` 用例用
+所以：**「151 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已验证」。**
+其中绝大多数业务用例跑在内存仿真引擎上，少数几条守卫只做静态文本/配置判定（不碰引擎，
+例如 `make` 目标存在性、仓库 LF、compose 启动超用户角色名），
+另有 5 个 `test_pg_runtime_wiring.py` 用例用
 **离线 mock** 钉住 PG 运行时接线（默认内存引擎 / 拒绝超用户与 BYPASSRLS 连接角色），
 同样不连真实 PG。
 本页的例外只有两处，且**证据性质不同**：①「真实 PostgreSQL RLS 策略与跨空间读拦截」
@@ -133,7 +134,7 @@ exit 2/3 都会让 job 变红），**并已于 2026-10-26 连续 2 次真实绿�
 | 60 秒验证端到端 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-launch` | CI 以真实子进程跑 `bootstrap` + `demo` |
 | MCP stdio 工具暴露 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-mcp` | CI 以真实管道完成 JSON-RPC 握手 |
 | 零密钥降级如实上报 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-degradation` | `retrieval_mode` / `degraded_reason` 正交 |
-| 跨平台 LF 规范化 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-lf` | `windows-latest` 真实文件系统门禁 |
+| 跨平台 LF 规范化 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-lf` | `windows-latest` 上跑同一套离线用例 + LF 守卫。**边界**：该 job 自 Run #2 起一直红（根因=en-US runner 的 cp1252 代码页，已修但**未推送复验**），Windows 侧回归门禁**当前尚未真正生效**；Windows 证据来自开发者本机真实 NTFS 全量运行 |
 | opt-in 匿名遥测 | `Planned` | 核心能力 / 尚未实现 | — | 决策已接受，实现排期 Q2 |
 | 模型 provider 抽象（R-04b） | `Implemented` | 核心能力 / 其他宣称 | `make verify-provider` | 向量来源可替换：`OMNILORE_EMBEDDING_PROVIDER` = `dashscope`（默认，行为与抽象前**逐字一致**）/ `openai`（任意 OpenAI 兼容端点：OpenAI / Azure / **Ollama** / vLLM / LM Studio）/ `none`；`OMNILORE_EMBEDDING_BASE_URL` + `OMNILORE_EMBEDDING_API_KEY` 指向自建端点（本地回环地址免 key）。四个曾经的「预留、不读取」变量（`OMNILORE_PRIMARY_MODEL` / `_ESCALATED_MODEL` / `_EMBEDDING_MODEL` / `_EMBEDDING_DIM`）**现已生效**，由 `ModelAdapterConfig.__post_init__` 读取，并有测试断言它们进入**真实请求体**。**证据边界**：用例用 `monkeypatch` 的假 HTTP 端点验证请求体/维度/降级，**没有对真实 OpenAI / Ollama 端点发过请求**，故不标 `Tested-real` |
 | ARM64 架构验证（R-11b） | `Implemented` | 核心能力 / 其他宣称 | —（CI `arm64` job） | CI 新增独立 `arm64` job（`ubuntu-24.04-arm`）跑同一套离线用例 + `ruff` + 冒烟；`integration-rls` 刻意留在 x86。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），**但只有 1 次绿灯、样本尚少**，故仍标 `Implemented` —— 本项目对 CI 类条目升 `Tested-real` 的门槛是**连续 ≥2 次绿灯**，累计达标后再评估升级 |
@@ -311,7 +312,11 @@ MCP stdio 服务端启动时被拒绝：
 `PgRuntime` 这条**连接**；`OmniLoreEngine` 的业务读写仍然走内存 `RLSDatabaseEngine`，
 `AsyncpgRepository` 仍未被业务路径实例化 —— 详见第 2.1 节。
 
-另一个已知事实：`omnilore_migrator` 是 docker 镜像的 bootstrap 超级用户，**无法降权**
-（`ALTER ROLE ... NOSUPERUSER` 报 `permission denied: The bootstrap user must have the
-SUPERUSER attribute`）。因此安全依靠两重保证：① 应用一律用 `omnilore_app` 连接；
+另一个已知事实：**在既有旧数据卷里**，`omnilore_migrator` 是 docker 镜像的 bootstrap 超级用户，
+**无法降权**（`ALTER ROLE ... NOSUPERUSER` 报 `permission denied: The bootstrap user must have the
+SUPERUSER attribute`）。容器编排现已改为 `POSTGRES_USER=postgres`（与 CI 的 `integration-rls`
+一致），新建的卷不会再由 initdb 创建该角色，它只是 `sql/001` 建的 `NOLOGIN` 角色；
+`sql/001` 另加 fail-closed 检查（该角色若可登录或为超用户即 `RAISE EXCEPTION`）。
+该配置改动**未在真实 docker 环境实跑验证**，旧卷也不会被自动修正（需 `docker compose down -v`）。
+无论新旧卷，安全都依靠两重保证：① 应用一律用 `omnilore_app` 连接；
 ② `PgRuntime._assert_safe_role` 强制拒绝任何超用户 / BYPASSRLS 连接角色。

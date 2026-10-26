@@ -15,7 +15,10 @@ dist/
 .mypy_cache/
 
 # 本地 IDE / Agent 工作区（内含 agent 记忆 MEMORY.md，不得随仓库公开）
+# 注意两个目录都要忽略：`.workbuddy/` 是早期路径，`.workbuddy-ai/` 是当前 agent 的记忆目录
+# （含逐日工作日志）。漏掉后者会让 agent 的工作记忆被 `git add .` 一起提交。
 .workbuddy/
+.workbuddy-ai/
 
 # 内部策略与竞品分析文档（2026-10-23 维护者裁定：不随开源仓库公开）
 # 内容含对 RAGFlow / Dify / Obsidian 的竞品象限分析与首发定价/渠道策略，

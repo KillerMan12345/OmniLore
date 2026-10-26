@@ -217,12 +217,12 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
     **但边界不变**：它只证明 `sql/001` 的 SQL 策略在真实 PG 上生效，
     **不等于业务运行时已接入 PostgreSQL / 数据已持久化**。
     `ARM64 架构验证` 因只有 1 次绿灯、样本尚少，维持 `Implemented`。
-- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 147 个测试 +
+- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 151 个测试 +
   ruff + DCO 校验 + 静态红线守卫，全程不使用任何 Secret；**另有一个独立的 `integration-rls`
   job 需要真实 PostgreSQL service container**（见上），它是全仓唯一需要外部服务的门禁，
   同样不使用任何 Secret。
-- **测试套件**：147 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、34 项首发专项、
-  59 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
+- **测试套件**：151 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、37 项首发专项、
+  60 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
   证据包导出与篡改测试 / 21 条 RLS 策略注释守卫 / 两条真实 PG 例外的证据性质守卫）、
   30 项 W6 专项
   （provider 抽象 / 四个环境变量真生效 / 维度守卫 / 降级回归 / 统一数据目录 / arm64 配置）、
@@ -286,6 +286,21 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **`tools/verify_rls_pg.py` 的 0/2/3 三码契约**：`psql` 若是 `.bat` 之类包装脚本，
   `CreateProcess` 无法直接执行 —— 因此校验可执行文件扩展名 + `OSError` 兜底，
   统一走 `EXIT_NOT_VERIFIED`：「没装客户端」属于**未验证**，不会伪装成「验证失败」的崩溃。
+- **容器编排的启动超用户与 `sql/001` 角色同名导致的静默提权**：`docker-compose.yml` 与
+  `.env.example` 曾把 `POSTGRES_USER` 写成 `omnilore_migrator`，与 `sql/001` 的
+  `CREATE ROLE omnilore_migrator NOLOGIN` **同名**。initdb 会先把它建成**可登录的超级用户**，
+  随后 `DO $$ IF NOT EXISTS $$` 直接跳过创建 —— 于是这个本应 `NOLOGIN` 的角色变成了可登录超用户，
+  而超级用户会**绕过全部 21 条 RLS 策略**。现改为 `postgres`（与 CI 的 `integration-rls` 一致），
+  `sql/001` 另加 **fail closed** 检查（该角色若可登录或为超用户即 `RAISE EXCEPTION`），
+  并新增守卫同时锁住「compose 默认值 == CI 值」「`.env.example` 不得漂移」
+  「启动超用户不得与任何 `NOLOGIN` 角色同名」「fail-closed 块必须存在」四件事（3 条变异验证均变红）。
+  **边界**：该配置改动**未在真实 docker 环境实跑验证**；已有旧数据卷不会被自动修正
+  （需 `docker compose down -v` 重建），旧卷里该角色仍是超用户。
+- **`docker-compose.yml` 的默认 `DATABASE_URL` 指向一个 `NOLOGIN` 角色**：原默认值用
+  `omnilore_gateway` 作连接用户，而该角色在 `sql/001` 里是 `NOLOGIN`，必然登录失败 →
+  `PgRuntime` fails closed → 容器根本起不来（配置写着能用，实际一启动就崩）。
+  现默认留空 = 走内存引擎、容器可正常启动；要用 PG 需显式提供可登录的应用角色
+  （如自行创建的 `omnilore_app`）。
 
 **数据完整性与跨平台行为**
 
@@ -295,6 +310,18 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **数据目录只有一个解析入口**：`resolve_data_dir()` 统一解析。CLI 与 MCP 服务各自解析时，
   在 `~` 或相对路径下会指向不同位置，导致 CLI 签发的 token 在 MCP 进程中失效。
 - **仓库文本统一为 LF**：`.gitattributes` 约束下，索引与工作区均为 `i/lf` / `w/lf`。
+- **非 UTF-8 代码页下 CLI / MCP 直接崩溃**：stdout 被重定向到管道或文件时，CPython 用
+  `locale.getpreferredencoding(False)` 编码（en-US Windows = **cp1252**，一个汉字都编不了），
+  于是子进程里任何一句中文 `print()` 都抛 `UnicodeEncodeError` 并以 1 退出 ——
+  `omnilore bootstrap > out.txt` 会崩，`windows-latest` 的两个 CI job 也正是这么红的
+  （ubuntu 是 UTF-8、zh-CN 本机是 cp936，所以两边一直绿）。现在入口先调用
+  `omnilore.textio.pin_utf8_std_streams()` 把 stdout/stderr 钉成 UTF-8 +
+  `errors="backslashreplace"`（`\uXXXX` **仍是合法 JSON**，因此不会污染 MCP 的线协议；
+  用 `replace` 会把中文变成 `?`）；**stdin 同样钉成 UTF-8**（MCP 线协议的输入侧，
+  否则 cp1252 宿主上读取含中文的请求帧会 `UnicodeDecodeError`）；CI 顶层同时开
+  `PYTHONUTF8=1`，测试侧把子进程 `PYTHONIOENCODING` 钉成 `utf-8`，不再依赖宿主代码页。
+  新增 2 条守卫（`PYTHONIOENCODING=cp1252` 下 CLI 必须 exit 0、MCP 三帧必须仍是合法 JSON
+  且中文原样回显），变异验证 2/2 变红。
 
 **入口与工具链**
 

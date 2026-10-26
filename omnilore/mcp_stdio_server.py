@@ -19,6 +19,7 @@ from typing import Any, Dict
 from .bootstrap import ensure_bootstrapped, load_bootstrap_state
 from .engine import OmniLoreEngine, OmniLoreError, OmniLoreMCPGateway, OperationType, ReviewAction
 from .pathutil import resolve_data_dir
+from .textio import pin_utf8_std_streams
 from .version import __version_label__
 
 
@@ -343,6 +344,10 @@ async def _attach_pg_runtime(engine: OmniLoreEngine) -> None:
 
 
 async def main_stdio() -> None:
+    # stdio 是**线协议**：帧必须按 UTF-8 写出。stdout 被管道接管时默认用 locale 编码
+    # （en-US Windows = cp1252），`ensure_ascii=False` 会把中文原样写出并抛
+    # UnicodeEncodeError —— 服务端在第一条含中文的响应上就死掉。先钉住编码再服务。
+    pin_utf8_std_streams()
     # Same resolver as the CLI (`omnilore.pathutil.resolve_data_dir`). Do NOT inline
     # `Path(os.environ[...])` here: bootstrap identity lives under this directory and
     # any drift silently produces a second, useless token. See QA finding P1-1.

@@ -5,7 +5,7 @@
 > **测试环境：** Linux (Python 3.11.2, `unittest.IsolatedAsyncioTestCase`, `PyYAML`, `Pillow`, `pdfplumber`, `pypdf`)  
 > **编写原则：** 100% 基于事实记录，明确区分“在当前 Linux 运行时中物理执行的测试”与“在本地 Docker + 云端 API 环境中联调的事项”
 
-> **当前状态补充：** 本报告保留 2026-10-22 的 19 项验收基线；当前仓库全量套件已扩展为 147 项
+> **当前状态补充：** 本报告保留 2026-10-22 的 19 项验收基线；当前仓库全量套件已扩展为 151 项
 > （其中 5 项 `test_pg_runtime_wiring.py` 为 PG 运行时接线的离线 mock 用例，不连真实 PG）。
 > 最新能力证据见 [`FEATURE_STATUS.md`](FEATURE_STATUS.md)，公开路线图进度见
 > [`ROADMAP_STATUS.md`](ROADMAP_STATUS.md)。新增用例不会反向改写本报告的历史执行日期。

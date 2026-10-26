@@ -47,14 +47,14 @@
 | 威胁 | 防御 | 证据状态 |
 |---|---|---|
 | 跨空间 / 跨 Profile 越权读取 | 四维权限交集，命令级按 `(space_id, category)` 过滤 | `Simulated`（内存仿真引擎） |
-| 应用误以**超级用户 / `BYPASSRLS` 角色**连上 PostgreSQL（这类角色会**静默绕过 RLS**，表现为「一切正常但隔离全失效」） | `PgRuntime._assert_safe_role`：连接后强制校验 `rolsuper` / `rolbypassrls` / 策略角色成员资格，任一不满足即**拒绝启动**（fails closed，不降级放行） | `Tested-real`（2026-10-25 真实 PostgreSQL 16.15 人工验证：以超级用户 `omnilore_migrator` 连接被拒绝启动；**非 CI**。离线另有 5 条 mock 用例钉住该分支） |
+| 应用误以**超级用户 / `BYPASSRLS` 角色**连上 PostgreSQL（这类角色会**静默绕过 RLS**，表现为「一切正常但隔离全失效」） | ① `PgRuntime._assert_safe_role`：连接后强制校验 `rolsuper` / `rolbypassrls` / 策略角色成员资格，任一不满足即**拒绝启动**（fails closed，不降级放行）；② `sql/001` 对「启动超用户与本文件 `NOLOGIN` 角色同名」的情况 `RAISE EXCEPTION`（配置层 fail closed） | `Tested-real`（2026-10-25 真实 PostgreSQL 16.15 人工验证：以超级用户 `omnilore_migrator` 连接被拒绝启动；**非 CI**。离线另有 5 条 mock 用例钉住该分支）。② 为**静态守卫**：`sql/001` 的 fail-closed 块与「compose 启动超用户 == CI 值、且不与任何 `NOLOGIN` 角色同名」由离线测试守住（3 条变异验证变红），**未经真实 docker 实跑** |
 | 路径穿越读取 vault 外文件 | `SecureVaultStorage._verify_safe_subpath`：拒绝绝对路径、`..`/`.`、符号链接 | `Tested-real`（Linux / Windows 真实文件系统；当前无 macOS CI） |
 | 符号链接把 vault 指向外部目录 | 逐级 `islink` 检查，并逐段拒绝链接链 | `Tested-real` |
 | token 撤销后仍能访问 | 进程内缓存主动失效（实测 `< 1ms`），下次请求即生效 | `Simulated` |
 | AI 提取的健康指标被当成事实 | 默认 `NEEDS_CHECK` + 显式提示，须人工 `FIX_EXTRACTED_FIELD` 才转 `HUMAN_VERIFIED` | `Simulated` |
 | 跨空间晋升时敏感信息外泄 | 晋升前扫描并脱敏身份证号、手机号、银行卡号、`sk-`/`tok-`/`ak-` | `Implemented`（纯函数 + 用例） |
 | 静默把降级伪装成正常 | `retrieval_mode` / `degraded_reason` / `synthesis_degraded` / `synthesis_note` 正交上报 | `Tested-real` |
-| Windows CRLF 破坏 SHA-256 对账 | 全部文本读写统一 UTF-8 + LF（`omnilore.textio`） | `Tested-real`（`windows-latest` 门禁） |
+| Windows CRLF 破坏 SHA-256 对账 | 全部文本读写统一 UTF-8 + LF（`omnilore.textio`） | `Tested-real`（Windows 真实 NTFS 上全量运行）。**边界**：`windows-latest` 的 CI job 自 Run #2 起一直红（根因=en-US runner 的 cp1252 代码页，已修但未推送复验），故「CI 持续门禁」这一层当前尚未生效 |
 
 > **`Simulated` 的含义**：证据来自与 PostgreSQL RLS **同构的内存仿真引擎**，
 > 真实 PostgreSQL 上没有 CI 证据。详见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)。

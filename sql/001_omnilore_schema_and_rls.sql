@@ -14,6 +14,25 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS "vector";
 CREATE EXTENSION IF NOT EXISTS "ltree";
 
+-- 0.0 防「同名提权」：fail closed，宁可初始化失败也不留一个看起来正常的提权角色。
+--     背景（真实踩过的坑）：docker-compose 曾把 POSTGRES_USER 写成 omnilore_migrator，
+--     initdb 会先把这个名字建成**可登录的超级用户**，下面的 `IF NOT EXISTS` 随即跳过创建。
+--     结果是本应 NOLOGIN 的属主角色静默变成可登录超用户，而超级用户会绕过全部 RLS 策略
+--     —— 这类失败「看起来一切正常」，比连不上危险得多。
+--     正确配置：POSTGRES_USER 用 initdb 的默认 postgres（与 CI 的 integration-rls 一致），
+--     omnilore_migrator 只由本文件按 NOLOGIN 创建。
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_roles
+        WHERE rolname = 'omnilore_migrator' AND (rolsuper OR rolcanlogin)
+    ) THEN
+        RAISE EXCEPTION
+            'omnilore_migrator 已存在且可登录或为超级用户：这是 POSTGRES_USER 与本文件角色同名导致的提权（超用户会绕过 RLS）。请把 compose/.env 的 POSTGRES_USER 改回 postgres，并重建数据卷。';
+    END IF;
+END
+$$;
+
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'omnilore_migrator') THEN

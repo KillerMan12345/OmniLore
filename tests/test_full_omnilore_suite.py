@@ -267,7 +267,7 @@ class TestOmniLoreFullSuite(unittest.IsolatedAsyncioTestCase):
 
         async with profiled_transaction(self.engine.db, work_scope) as conn:
             with self.assertRaises(PermissionDeniedError):
-                conn.update_row("documents", doc_id, lambda d: {**d, "category": "03_Family"})
+                await conn.update_row("documents", doc_id, lambda d: {**d, "category": "03_Family"})
 
         with self.assertRaises(PermissionDeniedError):
             await self.mcp.get_document_asset(self.alice_omni_token, "../etc/passwd", asset_type="WIKI")
@@ -557,7 +557,7 @@ class TestOmniLoreFullSuite(unittest.IsolatedAsyncioTestCase):
 
         # 5. Test FR-13 Family Member invitation & revocation
         dave_id = "44444444-4444-4444-4444-444444444444"
-        self.engine.invite_or_update_family_member(
+        await self.engine.invite_or_update_family_member(
             self.alice_omni_token,
             family_space_id="sp_family_home",
             target_user_id=dave_id,
@@ -580,7 +580,7 @@ class TestOmniLoreFullSuite(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(dave_trends[0]["display_warning"], "人工已核验")
 
-        self.engine.remove_family_member(
+        await self.engine.remove_family_member(
             self.alice_omni_token,
             family_space_id="sp_family_home",
             target_user_id=dave_id,

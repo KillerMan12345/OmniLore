@@ -915,7 +915,7 @@ class RLSTransactionConnection:
             f"{space_id}:{category}" in write_scopes or f"{space_id}:*" in write_scopes
         )
 
-    def select_rows(self, table: str, predicate: Optional[Callable[[Dict[str, Any]], bool]] = None) -> List[Dict[str, Any]]:
+    async def select_rows(self, table: str, predicate: Optional[Callable[[Dict[str, Any]], bool]] = None) -> List[Dict[str, Any]]:
         rows = self._db._state[table].values()
         visible: List[Dict[str, Any]] = []
         current_uid = self.guc.get("app.current_user_id", "")
@@ -938,7 +938,7 @@ class RLSTransactionConnection:
                 visible.append(copy.deepcopy(row))
         return visible
 
-    def insert_row(self, table: str, pk: str, row: Dict[str, Any]) -> Dict[str, Any]:
+    async def insert_row(self, table: str, pk: str, row: Dict[str, Any]) -> Dict[str, Any]:
         current_uid = self.guc.get("app.current_user_id", "")
         if not current_uid:
             raise PermissionDeniedError(f"RLS INSERT rejected on {table}: missing app.current_user_id")
@@ -975,7 +975,7 @@ class RLSTransactionConnection:
         self._db._dirty_tables.add(table)
         return copy.deepcopy(stored)
 
-    def update_row(self, table: str, pk_val: str, updater: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+    async def update_row(self, table: str, pk_val: str, updater: Callable[[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
         existing = self._db._state[table].get(pk_val)
         if not existing:
             raise PermissionDeniedError(f"RLS UPDATE target not found or not visible on {table}")
@@ -1017,7 +1017,7 @@ class RLSTransactionConnection:
         self._db._dirty_tables.add(table)
         return copy.deepcopy(updated)
 
-    def delete_row(self, table: str, pk_val: str) -> None:
+    async def delete_row(self, table: str, pk_val: str) -> None:
         existing = self._db._state[table].get(pk_val)
         if not existing:
             raise PermissionDeniedError(f"RLS DELETE target not found or not visible on {table}")
@@ -1656,13 +1656,20 @@ class OmniLoreEngine:
         self,
         storage_root: Path,
         auth_service: Optional[AuthorizationService] = None,
-        db_engine: Optional[RLSDatabaseEngine] = None,
+        db_engine: Optional[Any] = None,
         model_config: Optional[ModelAdapterConfig] = None,
         custom_llm_handler: Optional[Callable[[str, Dict[str, Any], str], Dict[str, Any]]] = None,
     ):
         self.storage = SecureVaultStorage(storage_root)
         self.auth = auth_service or AuthorizationService()
-        self.db = db_engine or RLSDatabaseEngine()
+        if db_engine is not None:
+            self.db = db_engine
+        elif os.environ.get("DATABASE_URL"):
+            from .pg_engine import PgDatabaseEngine
+
+            self.db = PgDatabaseEngine(os.environ.get("DATABASE_URL"))  # type: ignore[assignment]
+        else:
+            self.db = RLSDatabaseEngine()
         self.model_config = model_config or ModelAdapterConfig()
         self.model_adapter = ModelAdapter(
             self.model_config,
@@ -1691,8 +1698,9 @@ class OmniLoreEngine:
             updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         )
 
-    def _record_audit(
+    async def _record_audit(
         self,
+        conn: RLSTransactionConnection,
         actor_user_id: str,
         space_id: Optional[str],
         category: Optional[str],
@@ -1703,21 +1711,25 @@ class OmniLoreEngine:
         after_summary: Dict[str, Any],
     ) -> None:
         audit_id = str(uuid.uuid4())
-        self.db._state["audit_events"][audit_id] = {
-            "audit_id": audit_id,
-            "actor_user_id": actor_user_id,
-            "space_id": space_id,
-            "category": category,
-            "action_type": action_type,
-            "target_object_type": target_object_type,
-            "target_object_id": target_object_id,
-            "before_summary": before_summary,
-            "after_summary": after_summary,
-            "request_id": str(uuid.uuid4()),
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
+        await conn.insert_row(
+            "audit_events",
+            "audit_id",
+            {
+                "audit_id": audit_id,
+                "actor_user_id": actor_user_id,
+                "space_id": space_id,
+                "category": category,
+                "action_type": action_type,
+                "target_object_type": target_object_type,
+                "target_object_id": target_object_id,
+                "before_summary": before_summary,
+                "after_summary": after_summary,
+                "request_id": str(uuid.uuid4()),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
-    def _transition_task(self, conn: RLSTransactionConnection, task_id: str, new_state: TaskState, **updates: Any) -> Dict[str, Any]:
+    async def _transition_task(self, conn: RLSTransactionConnection, task_id: str, new_state: TaskState, **updates: Any) -> Dict[str, Any]:
         def _upd(row: Dict[str, Any]) -> Dict[str, Any]:
             current = TaskState(row["task_state"])
             validate_state_transition(current, new_state)
@@ -1727,7 +1739,7 @@ class OmniLoreEngine:
                 row[k] = v
             return row
 
-        return conn.update_row("ingestion_tasks", task_id, _upd)
+        return await conn.update_row("ingestion_tasks", task_id, _upd)
 
     async def ingest_document(
         self,
@@ -1788,7 +1800,7 @@ class OmniLoreEngine:
         )
 
         async with profiled_transaction(self.db, scope) as conn:
-            existing_tasks = conn.select_rows(
+            existing_tasks = await conn.select_rows(
                 "ingestion_tasks",
                 lambda r: r["idempotency_key"] == idem_key,
             )
@@ -1800,7 +1812,7 @@ class OmniLoreEngine:
 
             task_id = str(uuid.uuid4())
             _, staged_raw_rel = self.storage.stage_raw_bytes(task_id, raw_bytes)
-            conn.insert_row(
+            await conn.insert_row(
                 "ingestion_tasks",
                 "task_id",
                 {
@@ -1823,7 +1835,7 @@ class OmniLoreEngine:
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
-            self._transition_task(conn, task_id, TaskState.PRECHECKING)
+            await self._transition_task(conn, task_id, TaskState.PRECHECKING)
 
         # Parse multi-format document (PDF, Image, Markdown, Code)
         try:
@@ -1833,7 +1845,7 @@ class OmniLoreEngine:
             err_msg = str(exc)
             err_code = "EMPTY_DOCUMENT" if "EMPTY_DOCUMENT" in err_msg else "UNREADABLE_BINARY"
             async with profiled_transaction(self.db, scope) as conn:
-                return self._transition_task(
+                return await self._transition_task(
                     conn,
                     task_id,
                     TaskState.FAILED_FINAL,
@@ -1844,7 +1856,7 @@ class OmniLoreEngine:
         space_rec = self.auth._spaces[resolved_space_id]  # type: ignore[index]
 
         async with profiled_transaction(self.db, scope) as conn:
-            self._transition_task(conn, task_id, TaskState.ROUTING)
+            await self._transition_task(conn, task_id, TaskState.ROUTING)
 
         try:
             model_res = self.model_adapter.generate_structured(
@@ -1868,7 +1880,7 @@ class OmniLoreEngine:
         except OmniLoreError as exc:
             async with profiled_transaction(self.db, scope) as conn:
                 if exc.code == "SENSITIVE_CATEGORY_EXTERNAL_BLOCKED":
-                    return self._transition_task(
+                    return await self._transition_task(
                         conn,
                         task_id,
                         TaskState.NEEDS_REVIEW,
@@ -1879,7 +1891,7 @@ class OmniLoreEngine:
                             "original_filename": original_filename,
                         },
                     )
-                return self._transition_task(
+                return await self._transition_task(
                     conn,
                     task_id,
                     TaskState.FAILED_RETRYABLE,
@@ -1895,7 +1907,7 @@ class OmniLoreEngine:
             or not scope.can_write(resolved_space_id, suggested_cat if is_auto_route else resolved_category)
         ):
             async with profiled_transaction(self.db, scope) as conn:
-                return self._transition_task(
+                return await self._transition_task(
                     conn,
                     task_id,
                     TaskState.NEEDS_REVIEW,
@@ -1913,7 +1925,7 @@ class OmniLoreEngine:
         for cit in model_res["citations"]:
             if str(cit).strip() and str(cit).strip() not in raw_text:
                 async with profiled_transaction(self.db, scope) as conn:
-                    return self._transition_task(
+                    return await self._transition_task(
                         conn,
                         task_id,
                         TaskState.NEEDS_REVIEW,
@@ -1988,7 +2000,7 @@ class OmniLoreEngine:
         )
 
         async with profiled_transaction(self.db, scope) as conn:
-            existing_series = conn.select_rows(
+            existing_series = await conn.select_rows(
                 "document_series",
                 lambda s: s["space_id"] == resolved_space_id and s["version_key"] == effective_version_key,
             )
@@ -2006,7 +2018,7 @@ class OmniLoreEngine:
                 series_id = series_row["series_id"]
             else:
                 series_id = str(uuid.uuid4())
-                conn.insert_row(
+                await conn.insert_row(
                     "document_series",
                     "series_id",
                     {
@@ -2040,7 +2052,7 @@ class OmniLoreEngine:
             staged_wiki_rel = self.storage.stage_wiki_draft(task_id, full_wiki_md)
             wiki_filename = f"{effective_version_key}_{version_label}_{doc_id[:8]}.md"
 
-            conn.insert_row(
+            await conn.insert_row(
                 "documents",
                 "doc_id",
                 {
@@ -2068,7 +2080,7 @@ class OmniLoreEngine:
             )
 
             outbox_id = str(uuid.uuid4())
-            conn.insert_row(
+            await conn.insert_row(
                 "outbox_events",
                 "event_id",
                 {
@@ -2108,7 +2120,7 @@ class OmniLoreEngine:
                     "processed_at": None,
                 },
             )
-            self._transition_task(
+            await self._transition_task(
                 conn,
                 task_id,
                 TaskState.STAGED,
@@ -2123,13 +2135,13 @@ class OmniLoreEngine:
         await self.process_outbox_event(raw_token, outbox_id)
 
         async with profiled_transaction(self.db, scope) as conn:
-            final_task = conn.select_rows("ingestion_tasks", lambda r: r["task_id"] == task_id)[0]
+            final_task = (await conn.select_rows("ingestion_tasks", lambda r: r["task_id"] == task_id))[0]
             return final_task
 
     async def process_outbox_event(self, raw_token: str, event_id: str) -> None:
         scope = self.auth.resolve_scope(raw_token)
         async with profiled_transaction(self.db, scope) as conn:
-            events = conn.select_rows("outbox_events", lambda e: e["event_id"] == event_id)
+            events = await conn.select_rows("outbox_events", lambda e: e["event_id"] == event_id)
             if not events:
                 return
             ev = events[0]
@@ -2137,9 +2149,9 @@ class OmniLoreEngine:
                 return
             payload = ev["payload"]
             task_id = payload["task_id"]
-            task_rows = conn.select_rows("ingestion_tasks", lambda t: t["task_id"] == task_id)
+            task_rows = await conn.select_rows("ingestion_tasks", lambda t: t["task_id"] == task_id)
             if task_rows and task_rows[0]["task_state"] == TaskState.STAGED.value:
-                self._transition_task(conn, task_id, TaskState.COMMITTING)
+                await self._transition_task(conn, task_id, TaskState.COMMITTING)
 
         cas_rel = f"{payload['sha256_hash'][:2]}/{payload['sha256_hash']}.bin"
         wiki_rel = f"{payload['space_id']}/wiki/{payload['wiki_filename']}"
@@ -2181,7 +2193,7 @@ class OmniLoreEngine:
                 asset_id = existing_assets[0]["asset_id"]
             else:
                 asset_id = payload["asset_id"]
-                conn.insert_row(
+                await conn.insert_row(
                     "assets",
                     "asset_id",
                     {
@@ -2195,7 +2207,7 @@ class OmniLoreEngine:
                     },
                 )
 
-            conn.insert_row(
+            await conn.insert_row(
                 "document_assets",
                 "doc_id",
                 {
@@ -2213,12 +2225,12 @@ class OmniLoreEngine:
 
             if op_type == OperationType.SUPPLEMENT_DOC and payload.get("parent_doc_id"):
                 parent_id = payload["parent_doc_id"]
-                conn.update_row(
+                await conn.update_row(
                     "documents",
                     doc_id,
                     lambda d: {**d, "doc_status": DocStatus.SUPPLEMENT_ACTIVE.value, "is_current": True},
                 )
-                conn.insert_row(
+                await conn.insert_row(
                     "document_relations",
                     "relation_id",
                     {
@@ -2233,7 +2245,7 @@ class OmniLoreEngine:
                     },
                 )
             else:
-                series_row = conn.select_rows("document_series", lambda s: s["series_id"] == series_id)[0]
+                series_row = (await conn.select_rows("document_series", lambda s: s["series_id"] == series_id))[0]
                 old_current_id = series_row.get("current_doc_id")
                 expected_old = payload.get("expected_current_doc_id")
                 if expected_old and old_current_id != expected_old:
@@ -2242,18 +2254,18 @@ class OmniLoreEngine:
                     )
 
                 if old_current_id and old_current_id != doc_id:
-                    conn.update_row(
+                    await conn.update_row(
                         "documents",
                         old_current_id,
                         lambda d: {**d, "doc_status": DocStatus.SUPERSEDED.value, "is_current": False},
                     )
-                    for ch in conn.select_rows("document_chunks", lambda c: c["doc_id"] == old_current_id):
-                        conn.update_row(
+                    for ch in await conn.select_rows("document_chunks", lambda c: c["doc_id"] == old_current_id):
+                        await conn.update_row(
                             "document_chunks",
                             ch["chunk_id"],
                             lambda c: {**c, "is_current": False},
                         )
-                    conn.insert_row(
+                    await conn.insert_row(
                         "document_relations",
                         "relation_id",
                         {
@@ -2268,12 +2280,12 @@ class OmniLoreEngine:
                         },
                     )
 
-                conn.update_row(
+                await conn.update_row(
                     "documents",
                     doc_id,
                     lambda d: {**d, "doc_status": DocStatus.PUBLISHED_CURRENT.value, "is_current": True},
                 )
-                conn.update_row(
+                await conn.update_row(
                     "document_series",
                     series_id,
                     lambda s: {
@@ -2285,7 +2297,7 @@ class OmniLoreEngine:
                 )
 
             chunk_id = str(uuid.uuid4())
-            conn.insert_row(
+            await conn.insert_row(
                 "document_chunks",
                 "chunk_id",
                 {
@@ -2318,7 +2330,7 @@ class OmniLoreEngine:
                 )
                 for cand in candidates:
                     metric_id = str(uuid.uuid4())
-                    conn.insert_row(
+                    await conn.insert_row(
                         "health_metrics",
                         "metric_id",
                         {
@@ -2352,7 +2364,7 @@ class OmniLoreEngine:
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 }
 
-            conn.update_row(
+            await conn.update_row(
                 "outbox_events",
                 event_id,
                 lambda e: {
@@ -2361,8 +2373,8 @@ class OmniLoreEngine:
                     "processed_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
-            self._transition_task(conn, payload["task_id"], TaskState.COMMITTED)
-            self._record_audit(
+            await self._transition_task(conn, payload["task_id"], TaskState.COMMITTED)
+            await self._record_audit(conn,
                 scope.user_id,
                 space_id,
                 category,
@@ -2439,9 +2451,9 @@ class OmniLoreEngine:
         q_tokens = lexical_tokens(query)
 
         async with profiled_transaction(self.db, scope) as conn:
-            candidate_chunks = conn.select_rows("document_chunks")
-            docs_by_id = {d["doc_id"]: d for d in conn.select_rows("documents")}
-            relations = conn.select_rows("document_relations")
+            candidate_chunks = await conn.select_rows("document_chunks")
+            docs_by_id = {d["doc_id"]: d for d in await conn.select_rows("documents")}
+            relations = await conn.select_rows("document_relations")
 
         scored_results: List[Dict[str, Any]] = []
         for ch in candidate_chunks:
@@ -2564,11 +2576,11 @@ class OmniLoreEngine:
             return {"status": "SKIPPED_SELF_WRITE_NOOP", "doc_id": doc_id}
 
         async with profiled_transaction(self.db, scope) as conn:
-            docs = conn.select_rows("documents", lambda d: d["doc_id"] == doc_id)
+            docs = await conn.select_rows("documents", lambda d: d["doc_id"] == doc_id)
             if not docs:
                 raise PermissionDeniedError("Target document for Markdown sync not found or unauthorized")
             doc = docs[0]
-            series = conn.select_rows("document_series", lambda s: s["series_id"] == doc["series_id"])[0]
+            series = (await conn.select_rows("document_series", lambda s: s["series_id"] == doc["series_id"]))[0]
 
             # R-16：只比对**当前仍受保护**的归属字段。用户把某个字段从白名单里去掉，
             # 就等于把这个字段的主权收回去了 —— 我们不再因为「你改了自己的笔记」而拒绝同步。
@@ -2585,7 +2597,7 @@ class OmniLoreEngine:
                 if key in comparable and fm.get(key) != value
             )
             if mismatched:
-                self._record_audit(
+                await self._record_audit(conn,
                     scope.user_id,
                     doc["space_id"],
                     doc["category"],
@@ -2612,7 +2624,7 @@ class OmniLoreEngine:
                 # R-16：冲突副本落隐藏目录，不再散落在用户的 vault 里。
                 conflict_rel = build_conflict_copy_rel_path(wiki_rel_path, disk_revision)
                 self.storage.write_wiki_by_record(doc["space_id"], conflict_rel, edited_markdown_on_disk)
-                self._record_audit(
+                await self._record_audit(conn,
                     scope.user_id,
                     doc["space_id"],
                     doc["category"],
@@ -2636,7 +2648,7 @@ class OmniLoreEngine:
             self.storage.write_wiki_by_record(doc["space_id"], doc["wiki_rel_path"], normalized_md)
             self._last_synced_hash_by_doc[doc_id] = new_hash
 
-            conn.update_row(
+            await conn.update_row(
                 "documents",
                 doc_id,
                 lambda d: {
@@ -2653,8 +2665,8 @@ class OmniLoreEngine:
 
             new_emb = self.model_adapter.embed_texts([parsed.body], space_id=doc["space_id"])[0]
             new_syms = extract_code_symbols(parsed.body)
-            for ch in conn.select_rows("document_chunks", lambda c: c["doc_id"] == doc_id):
-                conn.update_row(
+            for ch in await conn.select_rows("document_chunks", lambda c: c["doc_id"] == doc_id):
+                await conn.update_row(
                     "document_chunks",
                     ch["chunk_id"],
                     lambda c: {
@@ -2665,7 +2677,7 @@ class OmniLoreEngine:
                     },
                 )
 
-            self._record_audit(
+            await self._record_audit(conn,
                 scope.user_id,
                 doc["space_id"],
                 doc["category"],
@@ -2691,9 +2703,9 @@ class OmniLoreEngine:
             raise PermissionDeniedError("Caller lacks read access to generate space dashboard")
 
         async with profiled_transaction(self.db, scope) as conn:
-            tasks = conn.select_rows("ingestion_tasks", lambda t: t.get("space_id") == space_id)
-            docs = conn.select_rows("documents", lambda d: d["space_id"] == space_id)
-            chunks = conn.select_rows("document_chunks", lambda c: c["space_id"] == space_id and c.get("is_current"))
+            tasks = await conn.select_rows("ingestion_tasks", lambda t: t.get("space_id") == space_id)
+            docs = await conn.select_rows("documents", lambda d: d["space_id"] == space_id)
+            chunks = await conn.select_rows("document_chunks", lambda c: c["space_id"] == space_id and c.get("is_current"))
             audits = [
                 a for a in self.db._state["audit_events"].values()
                 if a.get("space_id") == space_id
@@ -2768,7 +2780,7 @@ class OmniLoreEngine:
     # 10. Phase 2: Family Member Management & Knowledge Lint (FR-12, FR-13)
     # =========================================================================
 
-    def invite_or_update_family_member(
+    async def invite_or_update_family_member(
         self,
         raw_token: str,
         *,
@@ -2793,35 +2805,39 @@ class OmniLoreEngine:
             granted_by=scope.user_id,
         )
         self.auth.grant_membership(mem)
-        self._record_audit(
-            scope.user_id,
-            family_space_id,
-            "03_Family",
-            "FAMILY_MEMBER_GRANTED",
-            "membership",
-            f"{target_user_id}:{family_space_id}",
-            {},
-            {"role": role.value, "allowed_categories": sorted(cats)},
-        )
+        async with profiled_transaction(self.db, scope) as conn:
+            await self._record_audit(
+                conn,
+                scope.user_id,
+                family_space_id,
+                "03_Family",
+                "FAMILY_MEMBER_GRANTED",
+                "membership",
+                f"{target_user_id}:{family_space_id}",
+                {},
+                {"role": role.value, "allowed_categories": sorted(cats)},
+            )
         return mem
 
-    def remove_family_member(self, raw_token: str, *, family_space_id: str, target_user_id: str) -> None:
+    async def remove_family_member(self, raw_token: str, *, family_space_id: str, target_user_id: str) -> None:
         scope = self.auth.resolve_scope(raw_token)
         caller_mem = self.auth._memberships.get((scope.user_id, family_space_id))
         if not caller_mem or caller_mem.revoked_at is not None or caller_mem.role != RoleType.ADMIN:
             raise PermissionDeniedError("Only an active ADMIN of the Family Hub can revoke family members")
 
         self.auth.revoke_membership(target_user_id, family_space_id)
-        self._record_audit(
-            scope.user_id,
-            family_space_id,
-            "03_Family",
-            "FAMILY_MEMBER_REVOKED",
-            "membership",
-            f"{target_user_id}:{family_space_id}",
-            {"status": "ACTIVE"},
-            {"status": "REVOKED"},
-        )
+        async with profiled_transaction(self.db, scope) as conn:
+            await self._record_audit(
+                conn,
+                scope.user_id,
+                family_space_id,
+                "03_Family",
+                "FAMILY_MEMBER_REVOKED",
+                "membership",
+                f"{target_user_id}:{family_space_id}",
+                {"status": "ACTIVE"},
+                {"status": "REVOKED"},
+            )
 
     async def run_knowledge_lint(self, raw_token: str, space_id: str) -> Dict[str, Any]:
         """
@@ -2835,8 +2851,8 @@ class OmniLoreEngine:
 
         now_iso = datetime.now(timezone.utc).isoformat()
         async with profiled_transaction(self.db, scope) as conn:
-            docs = conn.select_rows("documents", lambda d: d["space_id"] == space_id and d.get("is_current"))
-            health_rows = conn.select_rows("health_metrics", lambda m: m["space_id"] == space_id)
+            docs = await conn.select_rows("documents", lambda d: d["space_id"] == space_id and d.get("is_current"))
+            health_rows = await conn.select_rows("health_metrics", lambda m: m["space_id"] == space_id)
 
         known_titles = {d["title"] for d in docs}
         known_doc_ids = {d["doc_id"] for d in docs}
@@ -2950,7 +2966,7 @@ class OmniLoreMCPGateway:
 
         scope = self.engine.auth.resolve_scope(raw_token)
         async with profiled_transaction(self.engine.db, scope) as conn:
-            docs = conn.select_rows("documents", lambda d: d["doc_id"] == doc_id)
+            docs = await conn.select_rows("documents", lambda d: d["doc_id"] == doc_id)
             if not docs:
                 raise PermissionDeniedError("Resource not found or access denied")
             doc = docs[0]
@@ -2963,7 +2979,7 @@ class OmniLoreMCPGateway:
                     "version_label": doc["version_label"],
                 }
 
-            doc_assets = conn.select_rows("document_assets", lambda da: da["doc_id"] == doc_id)
+            doc_assets = await conn.select_rows("document_assets", lambda da: da["doc_id"] == doc_id)
             if not doc_assets:
                 raise PermissionDeniedError("Resource not found or access denied")
             asset_id = doc_assets[0]["asset_id"]
@@ -3021,7 +3037,7 @@ class OmniLoreMCPGateway:
         doc = None
         if task.get("result_doc_id"):
             async with profiled_transaction(self.engine.db, scope) as conn:
-                docs = conn.select_rows("documents", lambda d: d["doc_id"] == task["result_doc_id"])
+                docs = await conn.select_rows("documents", lambda d: d["doc_id"] == task["result_doc_id"])
                 doc = docs[0] if docs else None
         return {
             "task": task,
@@ -3052,7 +3068,7 @@ class OmniLoreMCPGateway:
     async def get_ingestion_task(self, raw_token: str, task_id: str) -> Dict[str, Any]:
         scope = self.engine.auth.resolve_scope(raw_token)
         async with profiled_transaction(self.engine.db, scope) as conn:
-            tasks = conn.select_rows("ingestion_tasks", lambda t: t["task_id"] == task_id)
+            tasks = await conn.select_rows("ingestion_tasks", lambda t: t["task_id"] == task_id)
             if not tasks:
                 raise PermissionDeniedError("Task not found or access denied")
             return tasks[0]
@@ -3085,8 +3101,8 @@ class OmniLoreMCPGateway:
         # ---------------------------------------------------------------------
         if action == ReviewAction.CANCEL_TASK:
             async with profiled_transaction(self.engine.db, scope) as conn:
-                updated = self.engine._transition_task(conn, target_id, TaskState.CANCELLED)
-                self.engine._record_audit(
+                updated = await self.engine._transition_task(conn, target_id, TaskState.CANCELLED)
+                await self.engine._record_audit(conn,
                     scope.user_id,
                     updated.get("space_id"),
                     updated.get("category"),
@@ -3103,7 +3119,7 @@ class OmniLoreMCPGateway:
         # ---------------------------------------------------------------------
         if action == ReviewAction.APPROVE_REVIEW:
             async with profiled_transaction(self.engine.db, scope) as conn:
-                tasks = conn.select_rows("ingestion_tasks", lambda t: t["task_id"] == target_id)
+                tasks = await conn.select_rows("ingestion_tasks", lambda t: t["task_id"] == target_id)
                 if not tasks:
                     raise PermissionDeniedError("Task not found or unauthorized")
                 task_row = tasks[0]
@@ -3152,7 +3168,8 @@ class OmniLoreMCPGateway:
                 subject_person=payload.get("subject_person", "本人"),
                 simulate_crash_after_stage=False,
             )
-            self.engine._record_audit(
+            async with profiled_transaction(self.engine.db, scope) as conn:
+                await self.engine._record_audit(conn,
                 scope.user_id,
                 approved_space,
                 approved_cat,
@@ -3161,7 +3178,7 @@ class OmniLoreMCPGateway:
                 target_id,
                 {"task_state": "NEEDS_REVIEW"},
                 {"task_state": "COMMITTED", "result_doc_id": committed_task["result_doc_id"]},
-            )
+                )
             return committed_task
 
         # ---------------------------------------------------------------------
@@ -3176,7 +3193,7 @@ class OmniLoreMCPGateway:
                 raise PermissionDeniedError(f"Caller lacks write permission in destination ({new_space_id}, {new_category})")
 
             async with profiled_transaction(self.engine.db, scope) as conn:
-                docs = conn.select_rows("documents", lambda d: d["doc_id"] == target_id)
+                docs = await conn.select_rows("documents", lambda d: d["doc_id"] == target_id)
                 if not docs:
                     raise PermissionDeniedError("Document not found or unauthorized")
                 doc = docs[0]
@@ -3201,12 +3218,12 @@ class OmniLoreMCPGateway:
                 )
                 self.engine._last_synced_hash_by_doc[target_id] = new_wiki_hash
 
-                conn.update_row(
+                await conn.update_row(
                     "document_series",
                     doc["series_id"],
                     lambda s: {**s, "space_id": new_space_id, "category": new_category},
                 )
-                updated_doc = conn.update_row(
+                updated_doc = await conn.update_row(
                     "documents",
                     target_id,
                     lambda d: {
@@ -3220,14 +3237,14 @@ class OmniLoreMCPGateway:
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
-                for ch in conn.select_rows("document_chunks", lambda c: c["doc_id"] == target_id):
-                    conn.update_row(
+                for ch in await conn.select_rows("document_chunks", lambda c: c["doc_id"] == target_id):
+                    await conn.update_row(
                         "document_chunks",
                         ch["chunk_id"],
                         lambda c: {**c, "space_id": new_space_id, "category": new_category},
                     )
 
-                self.engine._record_audit(
+                await self.engine._record_audit(conn,
                     scope.user_id,
                     new_space_id,
                     new_category,
@@ -3248,7 +3265,7 @@ class OmniLoreMCPGateway:
                 raise OmniLoreError("INVALID_PAYLOAD", "SPLIT_DOCUMENT requires at least 2 split definitions")
 
             async with profiled_transaction(self.engine.db, scope) as conn:
-                tasks = conn.select_rows("ingestion_tasks", lambda t: t["task_id"] == target_id)
+                tasks = await conn.select_rows("ingestion_tasks", lambda t: t["task_id"] == target_id)
                 if not tasks:
                     raise PermissionDeniedError("Quarantined task not found or unauthorized")
                 orig_task = tasks[0]
@@ -3276,9 +3293,8 @@ class OmniLoreMCPGateway:
                 created_docs.append(sub_res["task"]["result_doc_id"])
 
             async with profiled_transaction(self.engine.db, scope) as conn:
-                self.engine._transition_task(conn, target_id, TaskState.CANCELLED, review_reason="已拆分为多个独立文档")
-
-            self.engine._record_audit(
+                await self.engine._transition_task(conn, target_id, TaskState.CANCELLED, review_reason="已拆分为多个独立文档")
+                await self.engine._record_audit(conn,
                 scope.user_id,
                 orig_task.get("space_id"),
                 orig_task.get("category"),
@@ -3287,8 +3303,10 @@ class OmniLoreMCPGateway:
                 target_id,
                 {"task_state": "NEEDS_REVIEW"},
                 {"split_doc_ids": created_docs},
-            )
+                )
             return {"status": "SPLIT_COMPLETED", "source_task_id": target_id, "created_doc_ids": created_docs}
+
+
 
         # ---------------------------------------------------------------------
         # 5. REVERT_VERSION
@@ -3300,7 +3318,7 @@ class OmniLoreMCPGateway:
                 raise OmniLoreError("INVALID_PAYLOAD", "REVERT_VERSION requires expected_current_doc_id and rollback_to_doc_id")
 
             async with profiled_transaction(self.engine.db, scope) as conn:
-                series_list = conn.select_rows("document_series", lambda s: s["series_id"] == target_id)
+                series_list = await conn.select_rows("document_series", lambda s: s["series_id"] == target_id)
                 if not series_list:
                     raise PermissionDeniedError("Series not found or unauthorized")
                 series = series_list[0]
@@ -3309,23 +3327,23 @@ class OmniLoreMCPGateway:
                 if series["current_doc_id"] != expected_current_doc_id:
                     raise VersionConflictError("Series current_doc_id changed before revert could execute")
 
-                conn.update_row(
+                await conn.update_row(
                     "documents",
                     expected_current_doc_id,
                     lambda d: {**d, "doc_status": DocStatus.REVERTED.value, "is_current": False},
                 )
-                for ch in conn.select_rows("document_chunks", lambda c: c["doc_id"] == expected_current_doc_id):
-                    conn.update_row("document_chunks", ch["chunk_id"], lambda c: {**c, "is_current": False})
+                for ch in await conn.select_rows("document_chunks", lambda c: c["doc_id"] == expected_current_doc_id):
+                    await conn.update_row("document_chunks", ch["chunk_id"], lambda c: {**c, "is_current": False})
 
-                conn.update_row(
+                await conn.update_row(
                     "documents",
                     target_rollback_doc_id,
                     lambda d: {**d, "doc_status": DocStatus.PUBLISHED_CURRENT.value, "is_current": True},
                 )
-                for ch in conn.select_rows("document_chunks", lambda c: c["doc_id"] == target_rollback_doc_id):
-                    conn.update_row("document_chunks", ch["chunk_id"], lambda c: {**c, "is_current": True})
+                for ch in await conn.select_rows("document_chunks", lambda c: c["doc_id"] == target_rollback_doc_id):
+                    await conn.update_row("document_chunks", ch["chunk_id"], lambda c: {**c, "is_current": True})
 
-                updated_series = conn.update_row(
+                updated_series = await conn.update_row(
                     "document_series",
                     target_id,
                     lambda s: {
@@ -3335,7 +3353,7 @@ class OmniLoreMCPGateway:
                         "updated_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
-                self.engine._record_audit(
+                await self.engine._record_audit(conn,
                     scope.user_id,
                     series["space_id"],
                     series["category"],
@@ -3397,7 +3415,7 @@ class OmniLoreMCPGateway:
             promoted_doc_id = promoted["task"]["result_doc_id"]
 
             async with profiled_transaction(self.engine.db, scope) as conn:
-                conn.insert_row(
+                await conn.insert_row(
                     "document_relations",
                     "relation_id",
                     {
@@ -3411,17 +3429,16 @@ class OmniLoreMCPGateway:
                         "created_at": datetime.now(timezone.utc).isoformat(),
                     },
                 )
-
-            self.engine._record_audit(
-                scope.user_id,
-                dest_space_id,
-                dest_category,
-                "PROMOTE_COPY",
-                "document",
-                target_id,
-                {"source_doc_id": target_id, "redacted": apply_redaction},
-                {"promoted_doc_id": promoted_doc_id, "dest_space_id": dest_space_id},
-            )
+                await self.engine._record_audit(conn,
+                    scope.user_id,
+                    dest_space_id,
+                    dest_category,
+                    "PROMOTE_COPY",
+                    "document",
+                    target_id,
+                    {"source_doc_id": target_id, "redacted": apply_redaction},
+                    {"promoted_doc_id": promoted_doc_id, "dest_space_id": dest_space_id},
+                )
             return promoted
 
         # ---------------------------------------------------------------------
@@ -3429,7 +3446,7 @@ class OmniLoreMCPGateway:
         # ---------------------------------------------------------------------
         if action == ReviewAction.FIX_EXTRACTED_FIELD:
             async with profiled_transaction(self.engine.db, scope) as conn:
-                updated_metric = conn.update_row(
+                updated_metric = await conn.update_row(
                     "health_metrics",
                     target_id,
                     lambda m: {
@@ -3447,7 +3464,7 @@ class OmniLoreMCPGateway:
                         }],
                     },
                 )
-                self.engine._record_audit(
+                await self.engine._record_audit(conn,
                     scope.user_id,
                     updated_metric["space_id"],
                     "04_Health_Archive",
@@ -3474,7 +3491,7 @@ class OmniLoreMCPGateway:
             raise PermissionDeniedError("Caller lacks 04_Health_Archive read permission for health trends")
 
         async with profiled_transaction(self.engine.db, scope) as conn:
-            rows = conn.select_rows(
+            rows = await conn.select_rows(
                 "health_metrics",
                 lambda m: (
                     m["space_id"] == space_id

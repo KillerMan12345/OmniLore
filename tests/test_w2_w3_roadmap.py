@@ -655,10 +655,20 @@ class TestHonestFeatureStatus(unittest.TestCase):
         total_claimed = re.findall(r"合计 \*\*(\d+) 条\*\*", self.matrix)
         self.assertEqual([int(v) for v in total_claimed], [len(rows)] * len(total_claimed))
 
-    def test_readme_and_changelog_report_the_same_statistics(self) -> None:
-        """README 与 CHANGELOG 都必须复述矩阵里的同一组数字 —— 三处一致。"""
+    def test_readme_changelog_and_roadmap_report_the_same_statistics(self) -> None:
+        """README / CHANGELOG / ROADMAP_STATUS 都必须复述矩阵里的同一组数字 —— 四处一致。
+
+        ROADMAP 原本不在守卫范围内，于是它悄悄写着「`Implemented` 11 条、`Tested-real` 8 条」
+        （实际 10 / 9）而无人察觉 —— 这是**已经公开**的错误口径。缺口补上后，
+        任何一处再漂移都会立刻变红。
+        """
         rows = self._matrix_rows()
-        for label, text in (("README", self.readme), ("CHANGELOG", self.changelog)):
+        roadmap = _read(REPO_ROOT / "docs" / "ROADMAP_STATUS.md")
+        for label, text in (
+            ("README", self.readme),
+            ("CHANGELOG", self.changelog),
+            ("ROADMAP_STATUS", roadmap),
+        ):
             for state in FOUR_STATES:
                 actual = sum(1 for row in rows if row["state"] == state)
                 claimed = re.findall(rf"`{re.escape(state)}` (\d+) 条", text)
@@ -921,17 +931,64 @@ class TestHonestFeatureStatus(unittest.TestCase):
             self.assertIsNotNone(module._check_target_database_is_empty("postgresql://example/db"))
         self.assertEqual(module.EXIT_NOT_VERIFIED, 2, "未验证必须是 2，不能混成 1（崩溃）或 3（结论为否）")
 
+    #: 文档里出现 `make <目标>` 时，目标名只允许这些字符（**必须以字母开头**：
+    #: 否则 `WSL2_环境备注.md` 里 `GNU Make 4.3` 这种版本号会被当成目标名）。
+    MAKE_TARGET_TOKEN = re.compile(r"`?make\s+([A-Za-z][A-Za-z0-9_.-]*)`?")
+    #: 扫描范围排除的目录：都在 `.gitignore` 里，不是公开文档（写进去也不会被读者看到）。
+    NON_PUBLIC_DOC_DIRS = frozenset(
+        {".git", ".venv", "deliverables", "_execution_logs", ".workbuddy", ".workbuddy-ai", ".ruff_cache"}
+    )
+
+    def _public_docs(self) -> List[Path]:
+        """返回仓库里所有**面向读者**的 Markdown（全部 tracked 文档 + 未来新增的）。
+
+        用遍历而不是写死文件名列表：写死列表的下场就是这次 —— `ROADMAP_STATUS` /
+        `THREAT_MODEL` / `CHANGELOG` 三份不在名单里，于是它们写假命令不会有人发现。
+
+        用 `os.walk` 并在**进入前剪枝**，不用 `rglob`：`rglob` 会先钻进 `.venv/` 再过滤，
+        而 Windows 上本地 `.venv` 里可能有断链符号链接（例如 WSL 建的 venv），
+        `os.scandir` 会抛 `OSError: [WinError 1920]` —— 这在 Python 3.11 上直接让守卫 ERROR
+        （3.13 的 pathlib 恰好会吞掉这类错误，所以本机没暴露；CI 矩阵里有 3.11）。
+        """
+        docs: List[Path] = []
+        for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
+            dirnames[:] = [d for d in dirnames if d not in self.NON_PUBLIC_DOC_DIRS]
+            for name in filenames:
+                if name.endswith(".md"):
+                    docs.append(Path(dirpath) / name)
+        return sorted(docs)
+
     def test_every_make_target_mentioned_in_docs_exists(self) -> None:
-        """文档里写给用户跑的 `make xxx` 必须真的存在（不许写假命令）。"""
+        """文档里写给用户跑的 `make xxx` 必须真的存在（不许写假命令）。
+
+        覆盖范围是**全部公开文档**，不只是 README 与状态矩阵。缺口曾经是真实存在的：
+        这条守卫原先只扫那两份，于是另外三份文档里写一个不存在的目标也不会红。
+
+        两类合法的非目标写法必须排除，否则守卫会变成噪声源：
+          * 通配写法 `make verify-*`（文档在说「一组验证入口」，不是某一个）；
+          * 占位写法 —— 文档应当写 `make <目标>`，写成 `make xxx` 就会被判为假命令。
+
+        变异验证（已实测，三条都会红）：① 在 `ROADMAP_STATUS.md` 写 `` `make verify-does-not-exist` ``；
+        ② 在 `CHANGELOG.md` 写同样一行；③ 在 `THREAT_MODEL.md` 写同样一行。
+        """
         makefile = _read(MAKEFILE_PATH)
-        mentioned: set[str] = set()
-        for text in (self.readme, self.matrix):
-            mentioned.update(re.findall(r"`?make\s+([a-z0-9-]+)`?", text))
-        self.assertTrue(mentioned, "文档里没有任何 make 验证命令")
+        mentioned: Dict[str, List[str]] = {}
+        for path in self._public_docs():
+            for token in self.MAKE_TARGET_TOKEN.findall(_read(path)):
+                if "*" in token or token.endswith("-") or token.endswith("."):
+                    continue  # 通配 / 未写完的写法，不是某个具体目标
+                mentioned.setdefault(token, []).append(path.relative_to(REPO_ROOT).as_posix())
+
+        self.assertTrue(mentioned, "全部公开文档里没有任何 make 验证命令 —— 解析或文件发现失效了")
+        self.assertGreaterEqual(
+            len(self._public_docs()), 8,
+            f"只发现 {len(self._public_docs())} 份公开文档，明显少于预期 —— 扫描范围失效，"
+            "这条守卫会退化成空转",
+        )
         for target in sorted(mentioned):
             self.assertTrue(
                 re.search(rf"^{re.escape(target)}:", makefile, re.M),
-                f"Makefile 缺少目标 {target}",
+                f"Makefile 缺少目标 {target}（被 {sorted(set(mentioned[target]))} 引用）",
             )
 
 
@@ -1035,12 +1092,16 @@ class TestContributionEntryPoints(unittest.TestCase):
         env = dict(os.environ)
         env.pop("DATABASE_URL", None)
         env.pop("OMNILORE_MIGRATOR_DSN", None)
+        # 子进程的 stdout 编码必须与这里的解码方式一致：en-US Windows 的 locale 是 cp1252，
+        # 不钉住的话子进程打印中文会 UnicodeEncodeError（CI 的 windows-latest 就是这么红的）。
+        env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.run(
             [sys.executable, "tools/verify_rls_pg.py"],
             cwd=str(REPO_ROOT),
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         self.assertEqual(proc.returncode, 2, f"缺少数据库时应当以 2（未验证）退出：{proc.stdout}")
@@ -1277,6 +1338,90 @@ class TestCiIntegrationConfig(unittest.TestCase):
         for name in ("test", "lint", "dco"):
             self.assertNotIn("needs", self.workflow["jobs"][name],
                              f"{name} 不应依赖任何其他 job（尤其不该被 integration-rls 阻塞）")
+
+        # UTF-8 模式必须开着：runner 是 en-US，stdout 走管道时默认 locale 编码是 cp1252，
+        # 而本项目所有面向用户的文案都是中文 —— 关掉它，windows-latest 会因为
+        # UnicodeEncodeError 整片变红（历史上就是这样红的）。
+        self.assertEqual(
+            str((self.workflow.get("env") or {}).get("PYTHONUTF8")), "1",
+            "ci.yml 顶层 env 必须设 PYTHONUTF8=1：否则 en-US Windows runner 上"
+            "子进程打印中文会 UnicodeEncodeError，windows-latest 两个 job 会再次全红",
+        )
+
+    def test_compose_bootstrap_user_never_shadows_a_nologin_role(self) -> None:
+        """容器编排的启动超用户必须与 CI 一致，且不得与 `sql/001` 的 `NOLOGIN` 角色同名。
+
+        这是**安全**不变量，不是风格偏好。`docker-compose.yml` 曾把 `POSTGRES_USER` 写成
+        `omnilore_migrator`，而 `sql/001` 里有一句 `CREATE ROLE omnilore_migrator NOLOGIN`：
+        initdb 会先把这个名字建成**可登录的超级用户**，随后 `DO $$ IF NOT EXISTS $$` 直接
+        跳过创建 —— 于是一个本应 `NOLOGIN` 的属主角色静默变成了**可登录超用户**，而超级用户
+        会绕过全部 21 条 RLS 策略。CI 的 `integration-rls` 一直用 `postgres`，容器编排却与它
+        分叉：分叉意味着「CI 验证过的那条路径」和「用户实际跑的那条路径」不是同一条。
+
+        断言三件事（缺一条都会让上面那个提权悄悄回来）：
+          1. compose 的 `POSTGRES_USER` 默认值可**静态推导**（不允许只能运行时才知道）；
+          2. 它等于 CI `integration-rls` service 的 `POSTGRES_USER` —— 两条路径不许分叉；
+          3. 它不在 `sql/001` 的 `NOLOGIN` 角色集合里 —— 否则就是同名提权；
+          4. `sql/001` 自己对「同名且可登录/超用户」的情况 **fail closed**（宁可初始化失败，
+             也不留一个看起来正常的提权角色）。
+
+        变异验证（已实测，两条都会红）：把 compose 改回 `omnilore_migrator` → 第 3 条红；
+        删掉 `sql/001` 的 fail-closed 块 → 第 4 条红。
+        """
+        compose = yaml.safe_load(_read(REPO_ROOT / "docker-compose.yml"))
+        postgres = compose["services"]["postgres"]
+        raw_user = str((postgres.get("environment") or {}).get("POSTGRES_USER", ""))
+        match = re.search(r"\$\{POSTGRES_USER:-([^}]+)\}", raw_user)
+        self.assertIsNotNone(
+            match,
+            f"docker-compose.yml 的 POSTGRES_USER 必须给出可推导的默认值（形如 ${{POSTGRES_USER:-postgres}}），"
+            f"实际是 {raw_user!r} —— 没有默认值时本守卫无从判断容器会建成哪个超用户",
+        )
+        compose_user = match.group(1).strip()
+
+        ci_user = str((self._postgres_service().get("env") or {}).get("POSTGRES_USER", "")).strip()
+        self.assertTrue(ci_user, "integration-rls 的 postgres service 没有显式 POSTGRES_USER")
+        self.assertEqual(
+            compose_user, ci_user,
+            f"compose 的启动超用户是 {compose_user!r}，CI 是 {ci_user!r} —— 两条路径分叉了。"
+            "compose 那条路径没有 CI 覆盖，一旦分叉就没人替它把关",
+        )
+
+        # `.env` 会**覆盖** compose 里的默认值，而 `.env.example` 是用户照着 `cp` 的那一份。
+        # 只守住 compose 默认值是不够的：模板里写着旧名字，用户一 cp 就把它又改回去了。
+        env_example = _read(REPO_ROOT / ".env.example")
+        env_match = re.search(r"(?m)^POSTGRES_USER[ \t]*=[ \t]*(\S*)[ \t]*$", env_example)
+        self.assertIsNotNone(
+            env_match,
+            ".env.example 里没有 POSTGRES_USER —— 模板与 docker-compose.yml 漂移了",
+        )
+        self.assertEqual(
+            env_match.group(1).strip(), compose_user,
+            f".env.example 的 POSTGRES_USER 是 {env_match.group(1).strip()!r}，"
+            f"与 compose 默认值 {compose_user!r} 不一致；用户 `cp .env.example .env` 后"
+            "会用模板里的值覆盖默认值，于是同名提权又回来了",
+        )
+
+        sql = _read(REPO_ROOT / "sql" / "001_omnilore_schema_and_rls.sql")
+        nologin_roles = set(re.findall(r"CREATE ROLE\s+([A-Za-z_][A-Za-z0-9_]*)\s+NOLOGIN", sql))
+        self.assertGreaterEqual(
+            len(nologin_roles), 5,
+            f"只从 sql/001 解析到 {sorted(nologin_roles)} 个 NOLOGIN 角色（期望 ≥5）—— "
+            "守卫自身失效了，必须先修解析再谈结论",
+        )
+        self.assertNotIn(
+            compose_user, nologin_roles,
+            f"compose 的启动超用户 {compose_user!r} 与 sql/001 的 NOLOGIN 角色同名："
+            "initdb 会先把它建成可登录超用户，随后的 IF NOT EXISTS 会跳过创建，"
+            "结果是该角色绕过全部 RLS 策略",
+        )
+
+        self.assertRegex(
+            sql,
+            r"rolname\s*=\s*'omnilore_migrator'[\s\S]{0,240}?rolsuper[\s\S]{0,240}?RAISE\s+EXCEPTION",
+            "sql/001 缺少「同名提权」的 fail-closed 检查：若某个 POSTGRES_USER 恰好叫 "
+            "omnilore_migrator，脚本应当直接报错停下，而不是留下一个可登录超用户",
+        )
 
 
 class TestAuditBundle(unittest.IsolatedAsyncioTestCase):
@@ -1544,12 +1689,14 @@ class TestAuditBundleCli(unittest.TestCase):
         """`tools/verify_audit_bundle.py` 在真实子进程里跑通（`make verify-audit` 的同一条链路）。"""
         env = dict(os.environ)
         env.pop("DASHSCOPE_API_KEY", None)
+        env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.run(
             [sys.executable, "tools/verify_audit_bundle.py"],
             cwd=str(REPO_ROOT),
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         self.assertEqual(proc.returncode, 0, f"证据包探针未通过：\n{proc.stdout}\n{proc.stderr}")
@@ -1687,12 +1834,16 @@ class TestAuditBundleCrossProcess(unittest.TestCase):
         env = dict(os.environ)
         env.pop("DASHSCOPE_API_KEY", None)
         env.pop("OMNILORE_DATA_DIR", None)
+        # 与上面同理：子进程 stdout 钉成 UTF-8，父进程也按 UTF-8 解码，
+        # 这样测试就不再依赖宿主的代码页（cp936 / cp1252 / UTF-8 都一样）。
+        env["PYTHONIOENCODING"] = "utf-8"
         return subprocess.run(
             [sys.executable, "-m", "omnilore", *args],
             cwd=str(REPO_ROOT),
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
 

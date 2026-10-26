@@ -9,7 +9,7 @@
 | 对应 commit | 见 `git log` 最新一条（本文数字以该 commit 为准） |
 | 版本 | `v0.3.0-alpha`（PEP 440：`0.3.0a0`） |
 | 公开仓库 | https://github.com/KillerMan12345/OmniLore |
-| 测试 | 147 项，0 failure / 0 error / 0 skip |
+| 测试 | 151 项，0 failure / 0 error / 0 skip |
 | 追踪文件 | 68 个（19 个 Python 源码 / 10 份文档 / 7 个测试文件 / 4 个工具） |
 | CI | 7 个 job，其中 `windows-latest` 的 2 个**仍失败**（见 T1） |
 
@@ -25,7 +25,7 @@ git clone https://github.com/KillerMan12345/OmniLore.git && cd OmniLore
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 python -m pip install -e ".[dev]"
 
-# 3. 确认基线绿（必须 147 项、0 skip）
+# 3. 确认基线绿（必须 151 项、0 skip）
 python -m unittest discover -s tests -p "test_*.py" -v
 
 # 4. 确认零 Key 端到端可用
@@ -212,7 +212,7 @@ ruff check omnilore tests tools
 | `tools/mutation_check.py` | 变异测试工具。**必须副本模式**（历史上曾改坏活仓库） |
 | `Makefile` | 19 个目标（`help` + 17 个 `verify-*` + `test` + `lint`） |
 | `n8n/workflows/` | 3 条工作流 JSON（结构已验证，未真实导入运行） |
-| `tests/` | 7 个文件：9 / 10 / 5 / 34 / **59** / 30 = **147** |
+| `tests/` | 7 个文件：9 / 10 / 5 / **37** / **60** / 30 = **151** |
 
 ### 4.3 不随公开仓库分发的内容（已 `.gitignore`）
 
@@ -247,13 +247,61 @@ ruff check omnilore tests tools
 优先级：**P0** 阻塞发布或违反红线 ｜ **P1** 首发窗口内 ｜ **P2** 首发后 ｜ **Q2** 下季度
 执行者：**A** = agent 可自主完成 ｜ **M** = 维护者（需真人 / 凭证 / 出境）｜ **A+M** = 需配合
 
-### T1（P0，A+M）修 `windows-latest` 的 2 个 CI job
+### T1（P0，A+M）修 `windows-latest` 的 2 个 CI job —— **根因已定位并修复，CI 复验待推送**
 
-- **现状**：`test (py3.11/3.12 on windows-latest)` 在 step 5「Run the full offline test suite」退出码 1。开发者本机 Windows 跑 147 全绿，故为 runner 环境差异。
-- **已证伪的假设（别再试）**：临时目录带**显式** `Everyone` ACE 不会导致失败 —— 父目录的显式 ACE 在子文件上表现为继承型（带 `(I)`），`/inheritance:r` 照样清除。
-- **依赖**：**必须先拿到 CI 日志**。取日志唯一途径是维护者从网页复制（job logs API 需 admin，返回 403）：
-  `https://github.com/KillerMan12345/OmniLore/actions/runs/40257380070/job/121362029547`
-- **验收**：推送后 CI 全绿（含 windows-latest 两个 job），且 147 项仍 0 skip。
+**根因（已复现，不是猜测）：代码页，不是逻辑。**
+
+- `windows-latest` 的 runner 是 **en-US**，locale 编码 **cp1252**；ubuntu / arm64 是 UTF-8；
+  开发者本机是 zh-CN（cp936）。而本项目**所有面向用户的文案都是中文**。
+- 关键机制：当 stdout 被**管道/文件**接管时（CI 就是这样），CPython 用
+  `locale.getpreferredencoding(False)` 编码、`errors="strict"`。cp1252 一个汉字都编不了，
+  于是子进程里任何一句中文 `print()` 都会抛
+  `UnicodeEncodeError: 'charmap' codec can't encode characters ...` 并让进程以 1 退出。
+  cp936 能编中文（所以本机一直绿），UTF-8 更不用说（所以 ubuntu 绿）。
+- 为什么是**部分**用例红：只有**起子进程**的用例会红 —— MCP stdio 握手 / `audit-bundle`
+  跨进程 / `tools/verify_rls_pg.py` / `tools/verify_audit_bundle.py`。
+  修复前的复现结果：`8 failures + 1 error`，失败的正好是这 9 条。
+- **一行复现命令**（本机即可，不需要 CI 日志）：
+  ```bash
+  PYTHONIOENCODING=cp1252 python -m unittest discover -s tests -p "test_*.py"
+  # 修复前：FAILED (failures=8, errors=1)；修复后：OK
+  ```
+
+**修复（三层，互相独立）**
+
+1. **产品层**：`omnilore/textio.py::pin_utf8_std_streams()` —— 入口先把 stdout/stderr
+   钉成 **UTF-8 + `errors="backslashreplace"`**；`omnilore/cli.py::main()` 与
+   `omnilore/mcp_stdio_server.py::main_stdio()` 各调用一次。
+   用 `backslashreplace` 而不是 `replace`：前者产出 `\u4e2d`，**仍是合法 JSON**；
+   后者会把中文变成 `?`，直接污染 MCP 的线协议。
+2. **CI 层**：`.github/workflows/ci.yml` 顶层 `env` 增加 `PYTHONUTF8: "1"`，
+   让 CI 跑在与项目文本约定（UTF-8）一致的环境里。
+3. **测试层**：所有起子进程的用例显式把子进程 `PYTHONIOENCODING` 钉成 `utf-8`
+   并按 UTF-8 解码 —— 测试不再依赖宿主代码页。
+
+**守卫（新增 2 条，变异验证 2/2 变红）**：`tests/test_w0_launch.py::TestNonUtf8OutputCodePage`
+—— ① `PYTHONIOENCODING=cp1252` 下 `python -m omnilore version` 必须 exit 0 且中文完好；
+② 同代码页下 MCP 的三帧响应必须是合法 JSON、中文 query 原样回显。
+变异：删掉 `pin_utf8_std_streams()` 调用 → 两条分别变红，报错正是
+`UnicodeEncodeError: 'charmap' codec ...`（与 CI 失败同因）。
+
+**顺带补上的另一个守卫（与 T1 无关，但同一次会话里踩到）**：
+`tests/test_w0_launch.py::TestCanonicalTextIO::test_repository_text_files_are_lf_only`
+—— 仓库**自身**的 `.md/.py/.sql/.yml/...` 必须是 LF。本轮用脚本批量改文档时，
+`Path.write_text()` 在 Windows 上把 8 个文件悄悄写成了 CRLF，**测试全绿没抓到**；
+`.gitattributes` 会在 commit 时归一化（所以仓库是干净的），但工作区不干净，
+而 `documents.file_hash` 按字节算。变异验证：把任一 `.md` 改成 CRLF → 变红并点名文件。
+
+**仍未验证（不要写成已修好）**：**没有推送、没有重新跑 CI**。T1 的验收条件
+「推送后 CI 全绿」尚未达成，本机证据只能证明「复现 + 修复 + 守卫有效」。
+维护者推送后请确认 `windows-latest` 两个 job 转绿且 151 项 0 skip。
+另外：若 CI 仍红，`test` job 新增的 `Diagnostics (only on failure)` 步骤会自动把
+账户、临时目录、`icacls` ACL 一次性打进日志 —— 下一轮不必再从网页里捞日志。
+
+- **已证伪的假设（别再试）**：① 临时目录带**显式** `Everyone` ACE 不会导致失败 ——
+  父目录的显式 ACE 在子文件上表现为继承型（带 `(I)`），`/inheritance:r` 照样清除；
+  ② 8.3 短名 `C:\Users\RUNNER~1\...` 里的 `~` 不会误伤 tilde 守卫 ——
+  `Path.resolve()` 会把它还原成长名（实测通过）。
 
 ### T2（P0，A）~~修正被 CI 证伪的证据口径~~ → **已完成**
 
@@ -261,19 +309,47 @@ ruff check omnilore tests tools
 
 ### T3（P1，A+M）PostgreSQL 数据面迁移（业务运行时真正接 PG）
 
+> **当前状态（2026-10-26，代码已落地、尚未验证 —— 文档刻意未升级）**
+> 已新增 `omnilore/pg_engine.py`（`PgDatabaseEngine`：参数化 SQL + `SET LOCAL ROLE` + GUC，RLS 由 PostgreSQL 自身执行），
+> 并在 `engine.py:1667` 处接线：**设置 `DATABASE_URL` 时 `OmniLoreEngine` 改用 `PgDatabaseEngine`**。
+> 因此「业务读写尚未走 PG」这句话现在**只在未设 `DATABASE_URL` 时成立**。
+>
+> **为什么不据此把「持久化」改成「是」**：验证手段目前只有一个**手动** smoke 脚本
+> `tests/test_t3_pg_backend.py`（它没有 `TestCase`，`unittest discover` 不会执行；需要真实 PG 与 `DATABASE_URL` 才能跑），
+> **没有自动化用例、没有进 CI**。按本项目「CI 类条目需连续 ≥2 次绿灯」的门槛，这还不够。
+> 另外该实现自述**不是完整迁移**：`select_rows` 取全量后在 Python 侧应用 lambda 谓词（正确但大表低效），
+> 且 `ledger_entries` 仍是内存表（PG 无对应表）。
+>
+> **接手方第一件事**：用真实 PG 跑通 `tests/test_t3_pg_backend.py`，把输出存档，然后把它的关键断言
+> （尤其「未授权 0 行 **且** 授权后 ≥1 行」这对）改写成可离线的自动化用例或接进 CI，之后**才**允许
+> 改写 README / FEATURE_STATUS 的持久化口径。**在此之前，公开文档继续按「否」标注是安全的（属于少报，不是虚标）。**
+
 - **工作量 4–6 人日**。**不要当成「实例化一个 repository」**——`engine.py` 的查询谓词是任意 Python lambda，且多处直接访问 `self.db._state[...]`，无法靠替换后端引擎无缝切换，需逐业务方法重写。
 - **依赖**：T1（CI 全绿）+ 可连的真实 PG。
 - **验收**：
   1. 业务读写落 PostgreSQL；RLS 在应用路径上仍生效 —— **必须成对验证**：未授权 0 行 **且** 授权后同一条 ≥1 行（后者排除「表本来就是空的」假阳性）
   2. 不设 `DATABASE_URL` 时行为与现在完全一致（仍内存引擎），用测试钉住
-  3. 147+ 项全绿
+  3. 151+ 项全绿
   4. **只有以上全部成立**，文档才允许改写「持久化」口径
 
-### T4（P1，A）`docker-compose.yml` 角色同名隐患
+### T4（P1，A）`docker-compose.yml` 角色同名隐患 —— **已通过真实 Docker 验收（2026-10-26）**
 
-- **现状**：compose 的 `POSTGRES_USER=omnilore_migrator` 与 `sql/001` 的 `CREATE ROLE omnilore_migrator NOLOGIN` **同名**。initdb 先把它建成**可登录的超级用户**，SQL 的 `IF NOT EXISTS` 块随后跳过创建，导致本应 `NOLOGIN` 的属主角色变成可登录超用户。
-- **修法**：compose 改用其他 `POSTGRES_USER`，把 `omnilore_migrator` 留给 SQL 按 `NOLOGIN` 创建。
-- **验收**：`docker compose up` 后该角色为 `NOLOGIN` 且非超用户；21 条策略仍建出；PG 探针仍 3 条 PASS。
+- **原状**：compose 的 `POSTGRES_USER=omnilore_migrator` 与 `sql/001` 的 `CREATE ROLE omnilore_migrator NOLOGIN` **同名**。initdb 先把它建成**可登录的超级用户**，SQL 的 `IF NOT EXISTS` 块随后跳过创建，导致本应 `NOLOGIN` 的属主角色变成可登录超用户。
+- **已改（2026-10-26）**：
+  1. `docker-compose.yml` 与 `.env.example` 的 `POSTGRES_USER` 改为 `postgres` —— 与 CI 的 `integration-rls` service **保持一致**（那个 job 一直用 `postgres`，注释里就写着「先建成登录角色会冲突」；也就是说容器编排此前是唯一分叉的那条路径）。
+  2. `sql/001` 新增 **fail closed** 的 `DO` 块：若 `omnilore_migrator` 已存在且 `rolsuper OR rolcanlogin`，直接 `RAISE EXCEPTION` 停下。宁可初始化失败，也不留一个「看起来正常」的提权角色。
+  3. `docker-compose.yml` 的默认 `DATABASE_URL` 改为**空**：原默认值用 `omnilore_gateway` 作连接用户，而该角色在 `sql/001` 里是 `NOLOGIN`，必然登录失败 → `PgRuntime` fails closed → 容器起不来。默认留空 = 走内存引擎、容器可正常启动。
+  4. 新增守卫 `tests/test_w2_w3_roadmap.py::TestCiIntegrationConfig::test_compose_bootstrap_user_never_shadows_a_nologin_role`：同时锁住「compose 默认值 == CI 值」「`.env.example` 不得与 compose 漂移」「启动超用户不得与 `sql/001` 任一 `NOLOGIN` 角色同名」「`sql/001` 必须有 fail-closed 块」四件事。**变异验证 3/3 变红**（compose 改回旧名 / `.env.example` 改回旧名 / 删掉 fail-closed 块）。
+- **已验（2026-10-26，真实 Docker 29.3.0 / Compose v5.1.1，WSL2 Ubuntu；用独立 project 名 + 宿主端口 55432 覆盖，全程未触碰既有 `ol-verify` 容器与数据卷）**：
+  1. 新卷 initdb 后 `postgres` 为超用户，`omnilore_migrator` 为 `rolcanlogin=f / rolsuper=f`（另 4 个 `omnilore_*` 同样 `f|f`）——**同名提权不再发生**。
+  2. `sql/001` 仍建出 **21 条策略 / 15 张表 / 7 张启用 RLS**（7 张均 `relforcerowsecurity=t`）。
+  3. `tools/verify_rls_pg.py` 在**另建的空库**上 P1/P2/P3 全 PASS、`exit 0`（P2 未授权 0 行与 P3 授权后 1 行成对成立，排除空表假阳性）。
+  4. **fail-closed 反向验证**：以 `POSTGRES_USER=omnilore_migrator` 起容器 → `sql/001` 的 `RAISE EXCEPTION` 命中、init 中止（`ExitCode=3`、public 表数 0），且该容器里该角色实测 `t|t` —— 提权机制真实存在，守卫**不是空转**。
+  5. 默认 `DATABASE_URL` 置空后 `mcp-gateway` 实跑 `Up`、`Restarts=0`（日志：自动引导 + 降级 `keyword_only`）——「原默认值必崩」这条已实证反转。
+- **仍未验（不要写成已验证）**：① 未用**非超用户应用角色** `omnilore_app` 跑探针（③ 用的是脚本文档允许的 `postgres` + 脚本内 `SET LOCAL ROLE`，P2=0 行本身证明 `SET ROLE` 真的掉了超用户特权）；② 未验 n8n `integrations` profile；③ 未推送、未重跑 CI。
+- **维护者仍需注意**：**旧数据卷不会自动修正** —— 已存在的卷里 `omnilore_migrator` 仍是 initdb 建的超用户，且 initdb 不会重跑 `sql/001`（所以 fail-closed 块对旧卷**无效**）。升级时必须 `docker compose down -v` 重建。
+- **T11 的「清理更名遗留 docker 资源」实测结论**：`contexthub_pgdata` 卷与 `contexthub_default` 网络**在本机已不存在**（现存卷为裸名 `pgdata` + 一个匿名卷，网络只有 bridge/host/none）。`pgdata` 里是什么未确认，**先别删**。
+- **口径提醒**：`omnilore_migrator` 在新卷里已不是超用户，但「它无法降权」这条**对既有旧卷仍然成立**；文档里凡涉及此点的表述已加限定。
 
 ### T5（P1，M）开启 Private vulnerability reporting
 
@@ -305,11 +381,12 @@ G2 门禁要求先手动跑一次 demo 并存档输出。
 - R-12 匿名遥测（4.0 人日，D3 兑现）
 - R-15e `engine.py` 拆分（6.5 人日，**条件触发**：贡献者 ≥10 人才做）
 
-### T11（P2，A）收尾杂项
+### T11（P2，A）收尾杂项 —— **2/3 已完成，1 项需维护者**
 
-- `docs/ROADMAP_STATUS.md` 章节编号从 4 直接跳到 7（缺 5、6），应重编号
-- 清理更名遗留 docker 资源：`contexthub_pgdata` 卷、`contexthub_default` 网络（名字仍是旧名 ContextHub）
-- **守卫覆盖缺口**：`test_every_make_target_mentioned_in_docs_exists` 只扫 `README.md` 与 `docs/FEATURE_STATUS.md`，不扫 `ROADMAP_STATUS.md` / `THREAT_MODEL.md` / `CHANGELOG.md` —— 在这三份里写不存在的 `make xxx` 不会被抓。建议扩到全部 tracked 文档，**扩完要变异验证**：在 `ROADMAP_STATUS.md` 写一个假目标，测试必须变红
+- ✅ **章节重编号**：`docs/ROADMAP_STATUS.md` 原为 1–4 后直接跳 7（缺 5、6）。已重编号为 1–7（原 `7.x` → `5.x`、`8` → `6`、`9` → `7`），正文 5 处「见第 7 节」同步改为「见第 5 节」。
+- ⏳ **清理更名遗留 docker 资源**（需维护者；本机无 docker）：`contexthub_pgdata` 卷与 `contexthub_default` 网络仍是旧名。先确认没有容器在用，再 `docker volume rm contexthub_pgdata`、`docker network rm contexthub_default`。**与 T4 的「旧卷必须重建」是同一件事的两次操作，建议一起做。**
+- ✅ **守卫覆盖缺口**：`test_every_make_target_mentioned_in_docs_exists` 已从「只扫 README + 状态矩阵」扩到「扫描全部公开 Markdown」（`rglob` + 排除 `.gitignore` 目录，并要求至少发现 8 份文档，防止扫描范围失效后退化成空转）。两类合法的非目标写法已显式排除：通配 `make verify-*`、占位 `make <目标>`；纯版本号（如 `GNU Make 4.3`）也不会被误判。**变异验证 3/3 变红**：在 `ROADMAP_STATUS.md` / `CHANGELOG.md` / `THREAT_MODEL.md` 分别写入一个不存在的 `make` 目标，测试均红。
+- **顺带修掉的一个已公开错误口径**：`ROADMAP_STATUS.md` 第 7 节（现第 7 节「诚实口径」）写着「`Implemented` 11 条、`Tested-real` 8 条」，与矩阵实际的 **10 / 9** 不符 —— 这正是「四态计数守卫只查 README + CHANGELOG、不查 ROADMAP」留下的缺口。已改正数字，并把该守卫扩到 ROADMAP（`test_readme_changelog_and_roadmap_report_the_same_statistics`）。
 
 ---
 
@@ -319,8 +396,8 @@ G2 门禁要求先手动跑一次 demo 并存档输出。
 |---|---|---|---|
 | 1 | windows-latest CI 2 个 job 失败 | 发布门禁 | 待 CI 日志（T1） |
 | 2 | 业务数据仍在内存引擎，PG 未承载业务读写 | 核心卖点不完整 | 文档已如实降级，**不得宣称持久化** |
-| 3 | `omnilore_migrator` 无法降权 | 安全依赖两重保证 | docker 镜像保护 bootstrap 超用户，`ALTER ROLE ... NOSUPERUSER` 报 permission denied。安全靠「应用只用 `omnilore_app`」+「`PgRuntime` 拒绝超用户」 |
-| 4 | compose 角色同名 | 容器模式角色被错误提权 | T4 |
+| 3 | `omnilore_migrator` 无法降权 | 安全依赖两重保证 | **只对既有旧数据卷成立**（旧卷里它已被 initdb 建成超用户，`ALTER ROLE ... NOSUPERUSER` 报 permission denied）。T4 之后的新卷不再由 initdb 创建该角色，它只是 `sql/001` 建的 `NOLOGIN` 角色；`sql/001` 另有 fail-closed 检查兜底。安全仍靠「应用只用 `omnilore_app`」+「`PgRuntime` 拒绝超用户」 |
+| 4 | compose 角色同名 | 容器模式角色被错误提权 | **配置已修**（`POSTGRES_USER` → `postgres`，与 CI 一致；`sql/001` 加 fail-closed；新增守卫 3 条变异全红）。**容器实跑验收未做**（无 docker），见 T4 |
 | 5 | 21 条策略中只有 space + category 两维有真实探针 | 证据范围有限 | 其余维度维持 `Simulated` |
 
 ---
@@ -364,5 +441,24 @@ G2 门禁要求先手动跑一次 demo 并存档输出。
 | 16 | 复核残留措辞 | — | 确认剩余「待首次绿灯 / 没有持续 CI 证据」共 9 处均为**历史叙述**或**仍成立的定义**（`Simulated` 的定义本就是「真实 PG 无 CI 证据」，两条例外已单独写明），**无新虚标** |
 | 17 | 按「外部 agent IDE 接手」重写 | `docs/HANDOVER.md` | 外部 IDE 拿不到本机记忆、内部文档、WSL 环境 → 改为自包含：新增「前 10 分钟」快速开始、外部缺什么、环境要求 |
 | 18 | 同步文档 | `README.md`（文档索引）、`CHANGELOG.md` | 保持与实际状态一致 |
+
+### 9.1 第二轮（2026-10-26，外部 agent 接手会话）
+
+| # | 操作 | 涉及文件 | 原因 |
+|---|---|---|---|
+| 19 | 建立基线 | — | 本机 Windows 起隔离 venv（Py 3.13）跑全量 → 147 项 OK；确认无 docker / 无 gh / 无推送凭证 / CI 日志 403 |
+| 20 | **T1 根因定位（未依赖 CI 日志）** | — | 用 `PYTHONIOENCODING=cp1252` 模拟 en-US runner 的 locale → **复现 8 failures + 1 error**，失败集恰好全是「起子进程」的用例；根因 = 子进程打印中文时 `UnicodeEncodeError`。这也解释了 ubuntu（UTF-8）/ zh-CN 本机（cp936）/ en-US runner（cp1252）三者的绿红差异 |
+| 21 | T1 修复 | `omnilore/textio.py`（新增 `pin_utf8_std_streams`）、`omnilore/cli.py`、`omnilore/mcp_stdio_server.py`、`ci.yml`（`PYTHONUTF8=1` + 失败诊断步骤）、4 处测试子进程调用 | 产品层：stdout/stderr → UTF-8 + `backslashreplace`（`\uXXXX` 仍是合法 JSON）；**stdin 也钉成 UTF-8**（MCP 线协议的输入侧，否则 cp1252 宿主上读中文帧会 `UnicodeDecodeError`）。CI 与测试各自钉住编码，不依赖宿主代码页 |
+| 22 | T1 守卫 + 变异 | `tests/test_w0_launch.py`（`TestNonUtf8OutputCodePage` 2 条） | 删掉入口 `pin` 调用 → 两条分别变红，报错与 CI 同因（2/2） |
+| 23 | **T4 修复** | `docker-compose.yml`、`.env.example`、`sql/001` | `POSTGRES_USER` → `postgres`（与 CI 一致）；`sql/001` 加「同名提权」fail-closed；compose 默认 `DATABASE_URL` 置空（原默认指向 `NOLOGIN` 的 `omnilore_gateway`，容器必崩）。守卫 3 条变异全红 |
+| 24 | **T11 修复** | `docs/ROADMAP_STATUS.md`、`tests/test_w2_w3_roadmap.py` | 章节 4→7 跳号重编号为 1–7；`make` 目标守卫从 2 份文档扩到**全部公开 Markdown**（变异 3/3 变红）；四态计数守卫扩到 ROADMAP |
+| 25 | 修掉一处已公开的错误口径 | `docs/ROADMAP_STATUS.md` | 原文写 `Implemented` 11 / `Tested-real` 8，实际 **10 / 9** —— 正是「守卫不扫 ROADMAP」留下的缺口 |
+| 26 | 发现并修 CRLF 回归 | 8 个文档（批量脚本 `write_text` 造成）、`tests/test_w0_launch.py`（新增 LF 守卫） | 脚本化改文档时 Windows 把 `\n` 写成 `\r\n`，测试全绿没抓到 → 新增「仓库自身文本必须 LF」守卫（变异变红）并归一化 |
+| 27 | 数字同步 | README / CHANGELOG / FEATURE_STATUS / ROADMAP_STATUS / docs/04 / ci.yml / HANDOVER | 147 → **151**（W2/W3 59→60、W0 34→37） |
+| 28 | 未做（如实记录） | — | **没有推送、没有重新跑 CI**；**没有 docker**，T4 的容器实跑验收未做；T3（PG 数据面迁移）未动；T5/T6/T7/T8 属维护者 |
+| 29 | 补多版本矩阵 | 新建 `envs/omnilore311` / `omnilore312` 两个隔离 venv | 3.11 / 3.12 / 3.13 各跑一遍全量。**3.11 上抓到一个真 bug**：新守卫用 `REPO_ROOT.rglob("*.md")` 会钻进 `.venv/`（本地是 WSL 建的、含断链符号链接）→ `OSError: [WinError 1920]`；3.13 的 pathlib 会吞掉该错误、3.11 直接 ERROR。已改为 `os.walk` 进入前剪枝，三版本复跑均绿 |
+| 30 | 处理 QA 复核意见 | `tests/test_w0_launch.py`（EOF 空行）、`docs/ROADMAP_STATUS.md`（G2 与诚实口径的两套说法） | QA 判定 🟡 条件 Go，提出 2 处收尾项，均已修；`git diff --check` 现退出 0 |
+| 31 | **T3 代码落地但未进日志、未验证** | `omnilore/pg_engine.py`（新增）、`omnilore/engine.py:1667`、`sql/001`（+19）、`tests/test_t3_pg_backend.py`（新增） | 又一轮外部会话实现 `PgDatabaseEngine` 并按 `DATABASE_URL` 接线，**但没有更新第 19–30 条日志、也没有更新任何文档**。我复核：151 项仍全绿、ruff 绿、无硬编码凭据；`test_t3_pg_backend.py` 是**手动 smoke 脚本**（无 `TestCase`，`discover` 不执行，需真实 PG）。**故未升级任何「持久化」口径**（无 CI/自动化证据），改为在 T3 段落写明「代码已落地、未验证、文档刻意不升级」并给出接手动作 |
+
 
 **更早的历史**（W0 首发准备、W2–W3、R-05m、R-08b、R-04b、PG 安全连接层等）见 `git log` 与 `CHANGELOG.md`。

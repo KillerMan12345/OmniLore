@@ -310,12 +310,12 @@ omnilore/
 │   ├── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
 │   ├── verify_rls_app_role.py                        # 用**应用角色**在真实 PG 上复现 RLS 三条（需真实 PG + 应用角色）
 │   └── verify_audit_bundle.py                        # 证据包探针：改 1 字节必须 mismatch + exit 3
-└── tests/                                            # 端到端验收测试，共 147 个用例（0 skip）
+└── tests/                                            # 端到端验收测试，共 151 个用例（0 skip）
     ├── _platform_support.py                          # 新增：宿主能力探测（symlink → junction 回退）
     ├── test_omnilore_phase0_acceptance.py           # Phase 0/1 专项（安全/RLS/幂等/恢复/模型门禁）10 项
     ├── test_full_omnilore_suite.py                  # Phase 0~3 + Ops 综合验收 9 项
-    ├── test_w0_launch.py                             # W0 新增回归（引导/LF/版本/降级/合成正交/归因/权限/漂移/CLI/MCP 入口/文档宣称）34 项
-    ├── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）+ R-05m（证据包导出）/ R-08b 补课（21 条策略注释）+ 跨进程导出 + 真实 PG 例外证据性质守卫 59 项
+    ├── test_w0_launch.py                             # W0 新增回归（引导/LF/版本/降级/合成正交/归因/权限/漂移/CLI/MCP 入口/文档宣称）37 项
+    ├── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）+ R-05m（证据包导出）/ R-08b 补课（21 条策略注释）+ 跨进程导出 + 真实 PG 例外证据性质守卫 60 项
     ├── test_w6_provider_and_platform.py             # W6 新增：R-04b 向量来源抽象 / 四个环境变量真的生效 / 维度守卫 / 降级回归；R-11b 统一数据目录 + arm64 CI 守卫 30 项
     └── test_pg_runtime_wiring.py                    # PG 运行时接线：内存引擎默认 + 拒绝超用户/BYPASSRLS 连接角色 5 项
 ```
@@ -329,18 +329,18 @@ python -m unittest discover -s tests -p "test_*.py" -v
 # 等价：make verify
 ```
 
-**147 个测试用例**，全部离线运行，不需要数据库或 API Key：
+**151 个测试用例**，全部离线运行，不需要数据库或 API Key：
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---|---|
 | `test_omnilore_phase0_acceptance.py` | 10 项 | Phase 0/1 专项：安全、RLS（跑在内存仿真引擎上，`Simulated`）、幂等、崩溃恢复、模型门禁 |
 | `test_full_omnilore_suite.py` | 9 项 | Phase 0~3 + Ops 综合验收 |
-| `test_w0_launch.py` | 34 项 | **W0 新增**：引导幂等与 token 复用、LF 规范化、版本号一致、零 Key 降级、供应商故障降级、CLI/MCP 路径解析一致、CLI 端到端、MCP stdio 入口握手、`OMNILORE_AUTO_BOOTSTRAP=0` 不废既有 token |
-| `test_w2_w3_roadmap.py` | 59 项 | 主权配置、诚实标注、贡献入口、真实 PG 集成 CI 配置守卫（该 job 已真实运行、连续 2 次绿灯，故标 `Tested-real`）、证据包字段与篡改、21 条 RLS 策略注释、4 条跨进程导出、两条真实 PG 例外的证据性质守卫 |
+| `test_w0_launch.py` | 37 项 | **W0 新增**：引导幂等与 token 复用、LF 规范化、版本号一致、零 Key 降级、供应商故障降级、CLI/MCP 路径解析一致、CLI 端到端、MCP stdio 入口握手、`OMNILORE_AUTO_BOOTSTRAP=0` 不废既有 token |
+| `test_w2_w3_roadmap.py` | 60 项 | 主权配置、诚实标注、贡献入口、真实 PG 集成 CI 配置守卫（该 job 已真实运行、连续 2 次绿灯，故标 `Tested-real`）、证据包字段与篡改、21 条 RLS 策略注释、4 条跨进程导出、两条真实 PG 例外的证据性质守卫 |
 | `test_w6_provider_and_platform.py` | 30 项 | provider 抽象、四个环境变量真实生效、维度守卫、降级回归、统一数据目录、arm64 CI 配置守卫 |
 | `test_pg_runtime_wiring.py` | 5 项 | PG 运行时接线（`Implemented`，离线 mock 钉住；真实 PG 证据见 `tools/verify_rls_app_role.py`）：默认内存引擎、无 DATABASE_URL 不接 PG、拒绝超用户/BYPASSRLS 连接角色 |
 
-> ⚠️ **这 147 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
+> ⚠️ **这 151 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
 > 它与 PostgreSQL RLS **同构**，但**不是真实 PostgreSQL** —— 所以它们证明的是**逻辑正确性**，
 > 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS 相关能力一律标注 `Simulated` ——
 > **两条例外**（都在真实 PostgreSQL 16.15 上取过证，但**证据性质不同**）：
@@ -361,7 +361,7 @@ OmniLore 支持 **x86_64 与 arm64** 两种 CPU 架构，验证方式不同，�
 | 架构 | 状态 | 验证方式 |
 |---|---|---|
 | `x86_64`（Linux / Windows；macOS Intel 为兼容目标） | `Tested-real`（Linux / Windows） | CI 离线矩阵为 `ubuntu-latest` × `windows-latest` × Python 3.11/3.12；当前没有 macOS job，**不得把 macOS 写成已验证** |
-| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Implemented` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 147 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），但**只有 1 次绿灯、样本尚少**，故仍标 `Implemented`；本项目对「CI 类条目升 `Tested-real`」的门槛是**连续 ≥2 次绿灯**，达到后再评估升级 |
+| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Implemented` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 151 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），但**只有 1 次绿灯、样本尚少**，故仍标 `Implemented`；本项目对「CI 类条目升 `Tested-real`」的门槛是**连续 ≥2 次绿灯**，达到后再评估升级 |
 
 > 为什么 arm64 单独一个 job 而不是并进矩阵：`integration-rls` 刻意留在 x86（真实 PostgreSQL
 > service container）。在 arm64 上同时引入「新架构 + 新服务容器」两个变量，一旦红了分不清是谁的锅。
@@ -410,10 +410,10 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 > **当前统计（三处一致，由测试守护）：**
 > `Implemented` 10 条 ｜ `Tested-real` 9 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
 >
-> **测试跑在什么上面（重要）**：本项目的 140 个业务用例都跑在
+> **测试跑在什么上面（重要）**：本项目的绝大多数业务用例都跑在
 > `omnilore.engine.RLSDatabaseEngine`（**内存仿真引擎**）上 —— 它与 PostgreSQL RLS
-> 策略同构，但**不是真实 PostgreSQL**；新增的 5 个 PG 运行时接线用例同样是**离线 mock**，
-> 不连真实 PG；另有 2 条守卫只做静态文本判定、不碰引擎。因此凡是依赖真实 PG 的能力，一律标注
+> 策略同构，但**不是真实 PostgreSQL**；5 个 PG 运行时接线用例同样是**离线 mock**，
+> 不连真实 PG；另有少数几条守卫只做静态文本/配置判定、不碰引擎。因此凡是依赖真实 PG 的能力，一律标注
 > `Simulated`，并在 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md) 里给出
 > **你可以自己复跑的验证命令**。
 > **两条例外**（都在真实 PG 16.15 上取过证，但**证据性质不同**）：
@@ -471,7 +471,7 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 - **[Tested-real]** **60 秒验证端到端**：`omnilore bootstrap` + `omnilore demo` 在 CI 上以**真实子进程**跑通（零 API Key）。
 - **[Tested-real]** **MCP stdio 工具暴露**：7 个 MCP 工具经标准 JSON-RPC 2.0 stdio 暴露，CI 以**真实管道**完成握手。
 - **[Tested-real]** **零密钥降级如实上报**：无 Key 时 `retrieval_mode=keyword_only`、`degraded_reason` 非空，且与合成降级正交上报。
-- **[Tested-real]** **跨平台 LF 规范化**：全部文本读写统一 UTF-8 + LF，由 `windows-latest` 真实文件系统门禁防回归。
+- **[Tested-real]** **跨平台 LF 规范化**：全部文本读写统一 UTF-8 + LF；`windows-latest` 上跑同一套离线用例 + LF 守卫。**边界**：`windows-latest` 的两个 job 自 Run #2 起一直红（根因是 en-US runner 的 cp1252 代码页，已修复但**尚未推送复验**），因此这条 Windows 侧回归门禁**当前尚未真正生效**；Windows 侧证据来自开发者本机（真实 NTFS）跑完整套件。
 
 - **[Implemented]** **模型 provider 抽象（R-04b）**：向量来源不再绑死阿里云 —— `OMNILORE_EMBEDDING_PROVIDER` 可选 `dashscope`（默认，行为与之前完全一致）/ `openai`（**任意 OpenAI 兼容端点**：OpenAI、Azure、**Ollama**、vLLM、LM Studio、硅基流动）/ `none`（显式只用 BM25）；`OMNILORE_EMBEDDING_BASE_URL` 指向自建端点，本地回环地址**不需要 API Key**。四个曾经的「预留、不读取」变量（`OMNILORE_PRIMARY_MODEL` / `OMNILORE_ESCALATED_MODEL` / `OMNILORE_EMBEDDING_MODEL` / `OMNILORE_EMBEDDING_DIM`）**现已真正生效**，且 `omnilore bootstrap` 会回显实际生效的 provider/模型/维度。维度配错会**响亮报错**而不是截断补零。**证据边界**：用例用 `monkeypatch` 的假 HTTP 端点验证请求体与维度，**没有对真实 OpenAI / Ollama 端点做过验证**，故标 `Implemented` 而非 `Tested-real`。
 - **[Implemented]** **ARM64 架构验证（R-11b）**：CI 新增独立 `arm64` job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner），跑**同一套离线测试** + `ruff` + bootstrap/demo 冒烟；`integration-rls` 刻意留在 x86（不在新架构上再叠服务容器这个变量）。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），但仅 1 次、**样本尚少**，故仍标 `Implemented` —— 本项目对 CI 类条目的升级门槛是**连续 ≥2 次绿灯**，达到后再评估。

@@ -41,6 +41,7 @@ from .dashscope_client import ModelConfigError
 from .embedding_provider import EmbeddingConfigurationError
 from .engine import OmniLoreEngine, OmniLoreMCPGateway, OmniLoreError
 from .pathutil import resolve_data_dir
+from .textio import pin_utf8_std_streams
 
 # The sample knowledge used by `omnilore demo`. Kept in-repo so the demo never
 # needs network access, an API key, or any external file.
@@ -412,6 +413,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         (「已验证但结论为否」—— deliberately distinct from 1 so scripts can tell
         “the content was tampered with” apart from “the command was wrong”).
     """
+    # 先钉住 stdio 编码，再打印任何东西：stdout 被重定向到管道/文件时用的是
+    # locale 编码（en-US Windows = cp1252），写中文会直接 UnicodeEncodeError ——
+    # `omnilore bootstrap > out.txt` 就是这么崩的，也是 windows-latest CI 变红的根因。
+    pin_utf8_std_streams()
     parser = build_parser()
     args = parser.parse_args(argv)
     if getattr(args, "func", None) is None:

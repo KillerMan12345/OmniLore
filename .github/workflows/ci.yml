@@ -7,7 +7,7 @@ name: CI
 #    它同样**不使用任何 Secret**，但语义上是「失败即红」：探针的 exit 2（未验证）
 #    也必须让 job 失败 —— 否则就是假绿，比不跑更糟。
 #
-# 目标：G0 门禁 —— 147 个离线测试 + lint + DCO + 真实 PG RLS 探针，
+# 目标：G0 门禁 —— 151 个离线测试 + lint + DCO + 真实 PG RLS 探针，
 # 并在矩阵中包含 windows-latest 防 CRLF 回归。
 
 on:
@@ -29,6 +29,14 @@ env:
   DASHSCOPE_API_KEY: ""
   PYTHONDONTWRITEBYTECODE: "1"
   PYTHONUNBUFFERED: "1"
+  # UTF-8 模式。**这不是可有可无的美化项**：`windows-latest` 的 runner 是 en-US，
+  # stdout 被管道接管时 CPython 用 locale 编码（cp1252），而本项目所有面向用户的
+  # 文案都是中文 —— 一句 `print("已收录")` 就会 UnicodeEncodeError 并让进程以 1 退出。
+  # 这正是 windows-latest 两个 test job 长期变红、而 ubuntu / arm64 / 开发者本机
+  # （zh-CN，cp936 能编中文）全绿的原因。产品侧另有 `pin_utf8_std_streams()` 兜底，
+  # 测试侧另有 `TestNonUtf8OutputCodePage` 显式把子进程钉到 cp1252 来证明它不崩；
+  # 这里再显式开 UTF-8 模式，让 CI 跑在与项目文本约定一致的环境里。
+  PYTHONUTF8: "1"
 
 jobs:
   test:
@@ -55,8 +63,91 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: "Run the full offline test suite (147 tests: 19 acceptance + 34 W0 launch + 59 W2/W3 roadmap + 30 W6 provider/platform safety guards + 5 PG runtime wiring)"
+      - name: "Run the full offline test suite (151 tests: 19 acceptance + 37 W0 launch + 60 W2/W3 roadmap + 30 W6 provider/platform safety guards + 5 PG runtime wiring)"
         run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      # 只在失败时执行：把「平台环境差异」这一类信息一次性打进日志。
+      # 背景：windows-latest 的两个 job 曾在同一套 147 项用例上失败，而 ubuntu / arm64 /
+      # 开发者本机 Windows 全绿 —— 拿到日志的人却看不到 runner 的账户、临时目录与 ACL 状态，
+      # 只能靠猜。这一步把那些「只在 runner 上才不一样」的事实先摊开，避免下一轮继续猜。
+      # 注意：平台专属命令一律**先判平台再调用**（红线 3），因此这里用 python 内的 os.name 分支，
+      # 绝不在非 Windows 上先调 icacls / whoami。
+      - name: "Diagnostics (only on failure): platform, account and ACL state"
+        if: failure()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import platform
+          import subprocess
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          print("===== interpreter =====")
+          print(sys.version)
+          print(platform.platform())
+          tmp = tempfile.gettempdir()
+          print("tempfile.gettempdir() =", tmp)
+          print("Path(tmp).resolve()   =", Path(tmp).resolve())
+
+          print("===== env (permission-relevant) =====")
+          for key in (
+              "USERNAME", "USERDOMAIN", "USERPROFILE", "HOME", "TEMP", "TMP",
+              "OMNILORE_DATA_DIR", "DASHSCOPE_API_KEY",
+          ):
+              print(f"{key} = {os.environ.get(key)!r}")
+
+          if os.name != "nt":
+              print("===== POSIX: 不需要 icacls / whoami =====")
+              sys.exit(0)
+
+          def run(args):
+              """Run a Windows-only diagnostic command and print its output.
+
+              输出编码不能想当然：`icacls` / `whoami` 按**控制台代码页**输出（zh-CN=cp936、
+              en-US=cp1252/437），而 python 的默认解码是 locale —— 两者不一定一致。
+              这里逐个编码尝试解码，全部失败才用 replace 兜底，绝不因为日志乱码而中断诊断。
+              """
+              import locale
+
+              try:
+                  proc = subprocess.run(args, capture_output=True, timeout=30, check=False)
+              except (OSError, subprocess.SubprocessError) as exc:
+                  print(f"$ {' '.join(args)}\n!! 无法执行：{exc!r}")
+                  return
+              print(f"$ {' '.join(args)}")
+              for label, raw in (("stdout", proc.stdout), ("stderr", proc.stderr)):
+                  if not raw:
+                      continue
+                  text = None
+                  for encoding in ("utf-8", locale.getpreferredencoding(False), "cp936", "cp1252", "cp437"):
+                      try:
+                          text = raw.decode(encoding)
+                          break
+                      except (UnicodeDecodeError, LookupError):
+                          continue
+                  if text is None:
+                      text = raw.decode("utf-8", "replace")
+                  text = text.strip()
+                  print(text if label == "stdout" else f"[stderr] {text}")
+
+          print("===== whoami =====")
+          run(["whoami", "/user"])
+          print("===== ACL of the temp dir (继承 ACE 的锚点) =====")
+          run(["icacls", tmp])
+          data_dir = Path(os.environ.get("OMNILORE_DATA_DIR") or (Path(tmp) / "OmniLore_Data_Diag"))
+          if data_dir.exists():
+              print(f"===== ACL of {data_dir} =====")
+              run(["icacls", str(data_dir)])
+              for name in ("ops/secret.json", "ops/bootstrap_state.json"):
+                  candidate = data_dir / name
+                  if candidate.exists():
+                      print(f"===== ACL of {candidate} =====")
+                      run(["icacls", str(candidate)])
+          else:
+              print(f"（{data_dir} 不存在，跳过数据目录 ACL 采样）")
+          PY
 
       - name: "Guard: honest labelling (README <-> docs/FEATURE_STATUS.md <-> CHANGELOG)"
         if: matrix.python-version == '3.12'
@@ -166,7 +257,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: "ARM64: full offline test suite (same 147 tests as the x86 matrix)"
+      - name: "ARM64: full offline test suite (same 151 tests as the x86 matrix)"
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: "ARM64: ruff check"

@@ -30,11 +30,68 @@ See ``docs/DECISIONS.md`` (A-3) and ``CHANGELOG.md`` for the full rationale.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 from typing import Set
 
 # Token class used consistently across storage hashing and lexical retrieval.
 _TOKEN_PATTERN = re.compile(r"[\w\u4e00-\u9fa5]+")
+
+
+def pin_utf8_std_streams() -> None:
+    """Pin `sys.stdout` / `sys.stderr` to UTF-8 with escaped unencodable characters.
+
+    Why this exists (a real, reproduced CI failure)
+    -----------------------------------------------
+    OmniLore's user-facing messages are Chinese, and the project's text convention is
+    UTF-8. But a process's stdio encoding is *not* UTF-8 by default: when stdout is a
+    pipe or a file (CI, `omnilore demo > out.txt`, any MCP client), Python uses
+    `locale.getpreferredencoding(False)`. On an en-US Windows host that is **cp1252**,
+    and printing `中文` raises::
+
+        UnicodeEncodeError: 'charmap' codec can't encode characters ...
+
+    That crash is not cosmetic: it killed `omnilore bootstrap` / `audit-bundle` /
+    the MCP stdio server inside their child processes, which is exactly why the
+    `windows-latest` CI jobs failed while ubuntu (UTF-8 locale) and a zh-CN Windows
+    dev box (cp936 can encode Chinese) stayed green. Reproduce with::
+
+        PYTHONIOENCODING=cp1252 python -m omnilore version
+
+    Two deliberate choices
+    ----------------------
+    * **UTF-8, not the locale encoding**: stdout is a byte stream that other
+      processes/tools read. Writing it in the project's canonical encoding is the
+      only choice that keeps "what we printed" == "what we hashed/persisted".
+    * **`backslashreplace`, not `replace`**: `replace` would turn `中` into `?` and
+      corrupt the MCP JSON-RPC stream. `backslashreplace` emits ``\\u4e2d``, which is
+      still **valid JSON** and decodes losslessly on the client side.
+
+    Streams that cannot be reconfigured (e.g. a `StringIO` swapped in by a test, or
+    an already-detached stream) are left untouched — this helper never raises.
+
+    `stdin` is pinned too, for the same reason but a different failure mode: the MCP
+    stdio server reads UTF-8 JSON-RPC frames from stdin, and on a cp1252 host the
+    default decoder would raise `UnicodeDecodeError` on the first Chinese payload.
+    Input uses `errors="replace"` (there is no such thing as backslash-escaping on
+    the decode side); a corrupted frame then surfaces as a normal JSON-RPC error
+    instead of killing the server.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError):  # pragma: no cover - defensive, host dependent
+            continue
+
+    stdin_reconfigure = getattr(sys.stdin, "reconfigure", None)
+    if stdin_reconfigure is not None:
+        try:
+            stdin_reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):  # pragma: no cover - defensive, host dependent
+            pass
 
 
 def lexical_tokens(text: str, *, bigram_cjk: bool = True) -> Set[str]:

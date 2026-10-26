@@ -215,7 +215,7 @@ class TestOmniLorePhase0Acceptance(unittest.IsolatedAsyncioTestCase):
         async with profiled_transaction(self.engine.db, work_scope) as conn:
             # Attempting to UPDATE category from 01_Work to 03_Family under Work Profile must fail WITH CHECK!
             with self.assertRaises(PermissionDeniedError):
-                conn.update_row(
+                await conn.update_row(
                     "documents",
                     doc_id,
                     lambda d: {**d, "category": "03_Family"},
