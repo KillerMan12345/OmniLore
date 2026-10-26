@@ -1348,6 +1348,40 @@ class TestCiIntegrationConfig(unittest.TestCase):
             "子进程打印中文会 UnicodeEncodeError，windows-latest 两个 job 会再次全红",
         )
 
+    def test_shell_steps_avoid_nonportable_dev_stderr(self) -> None:
+        """shell 步骤不得依赖 `/dev/stderr` —— 它在 Windows 的 Git Bash 上不保证存在。
+
+        这是一个**确定性**的失败源，不是风格偏好：GitHub 的 bash step 默认带
+        `-e -o pipefail`，一旦 `tee /dev/stderr` 报 `No such file or directory`，
+        整条管道就非 0。历史上 MCP 握手冒烟正是这样红的 —— 而且该步带
+        `if: matrix.python-version == '3.12'`，py3.11 跳过它、看起来是绿的，
+        把 windows 的确定性失败伪装成了「偶发」。
+
+        同时断言该步的**检查本身被保留**（serverInfo 名 + 工具列表），
+        否则「让它变绿」的最省事办法就是删掉断言。
+        """
+        # 只看**代码行**：YAML 注释里出现这些字样是允许的（本仓库正是靠注释解释
+        # 为什么不能用它），注释不会被执行，不构成失败源。
+        code = "\n".join(
+            line for line in self.raw.splitlines() if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn(
+            "/dev/stderr", code,
+            "ci.yml 不得使用 /dev/stderr：Windows 的 Git Bash 上不保证存在，"
+            "配合 -o pipefail 会让整步确定性地失败",
+        )
+        self.assertNotIn(
+            "tee /dev/", code,
+            "ci.yml 不得把 tee 写到 /dev/* 下（同上，不可移植）",
+        )
+
+        steps = self.workflow["jobs"]["test"]["steps"]
+        smoke = [s for s in steps if "MCP stdio handshake" in str(s.get("name", ""))]
+        self.assertEqual(len(smoke), 1, "找不到唯一的 MCP 握手冒烟步骤")
+        run = str(smoke[0].get("run", ""))
+        self.assertIn('"omnilore-mcp-gateway"', run, "冒烟步骤必须断言 serverInfo.name")
+        self.assertIn("search_knowledge", run, "冒烟步骤必须断言 tools/list 真的返回了工具")
+
     def test_compose_bootstrap_user_never_shadows_a_nologin_role(self) -> None:
         """容器编排的启动超用户必须与 CI 一致，且不得与 `sql/001` 的 `NOLOGIN` 角色同名。
 

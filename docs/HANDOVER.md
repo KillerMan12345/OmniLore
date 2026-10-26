@@ -9,7 +9,7 @@
 | 对应 commit | 见 `git log` 最新一条（本文数字以该 commit 为准） |
 | 版本 | `v0.3.0-alpha`（PEP 440：`0.3.0a0`） |
 | 公开仓库 | https://github.com/KillerMan12345/OmniLore |
-| 测试 | 151 项，0 failure / 0 error / 0 skip |
+| 测试 | 152 项，0 failure / 0 error / 0 skip |
 | 追踪文件 | 68 个（19 个 Python 源码 / 10 份文档 / 7 个测试文件 / 4 个工具） |
 | CI | 7 个 job，其中 `windows-latest` 的 2 个**仍失败**（见 T1） |
 
@@ -25,7 +25,7 @@ git clone https://github.com/KillerMan12345/OmniLore.git && cd OmniLore
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 python -m pip install -e ".[dev]"
 
-# 3. 确认基线绿（必须 151 项、0 skip）
+# 3. 确认基线绿（必须 152 项、0 skip）
 python -m unittest discover -s tests -p "test_*.py" -v
 
 # 4. 确认零 Key 端到端可用
@@ -212,7 +212,7 @@ ruff check omnilore tests tools
 | `tools/mutation_check.py` | 变异测试工具。**必须副本模式**（历史上曾改坏活仓库） |
 | `Makefile` | 19 个目标（`help` + 17 个 `verify-*` + `test` + `lint`） |
 | `n8n/workflows/` | 3 条工作流 JSON（结构已验证，未真实导入运行） |
-| `tests/` | 7 个文件：9 / 10 / 5 / **37** / **60** / 30 = **151** |
+| `tests/` | 7 个文件：9 / 10 / 5 / **37** / **61** / 30 = **152** |
 
 ### 4.3 不随公开仓库分发的内容（已 `.gitignore`）
 
@@ -326,7 +326,7 @@ ruff check omnilore tests tools
 
 **仍未验证（不要写成已修好）**：**没有推送、没有重新跑 CI**。T1 的验收条件
 「推送后 CI 全绿」尚未达成，本机证据只能证明「复现 + 修复 + 守卫有效」。
-维护者推送后请确认 `windows-latest` 两个 job 转绿且 151 项 0 skip。
+维护者推送后请确认 `windows-latest` 两个 job 转绿且 152 项 0 skip。
 另外：若 CI 仍红，`test` job 新增的 `Diagnostics (only on failure)` 步骤会自动把
 账户、临时目录、`icacls` ACL 一次性打进日志 —— 下一轮不必再从网页里捞日志。
 
@@ -361,7 +361,7 @@ ruff check omnilore tests tools
 - **验收**：
   1. 业务读写落 PostgreSQL；RLS 在应用路径上仍生效 —— **必须成对验证**：未授权 0 行 **且** 授权后同一条 ≥1 行（后者排除「表本来就是空的」假阳性）
   2. 不设 `DATABASE_URL` 时行为与现在完全一致（仍内存引擎），用测试钉住
-  3. 151+ 项全绿
+  3. 152+ 项全绿
   4. **只有以上全部成立**，文档才允许改写「持久化」口径
 
 ### T4（P1，A）`docker-compose.yml` 角色同名隐患 —— **已通过真实 Docker 验收（2026-10-26）**

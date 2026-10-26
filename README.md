@@ -310,12 +310,12 @@ omnilore/
 │   ├── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
 │   ├── verify_rls_app_role.py                        # 用**应用角色**在真实 PG 上复现 RLS 三条（需真实 PG + 应用角色）
 │   └── verify_audit_bundle.py                        # 证据包探针：改 1 字节必须 mismatch + exit 3
-└── tests/                                            # 端到端验收测试，共 151 个用例（0 skip）
+└── tests/                                            # 端到端验收测试，共 152 个用例（0 skip）
     ├── _platform_support.py                          # 新增：宿主能力探测（symlink → junction 回退）
     ├── test_omnilore_phase0_acceptance.py           # Phase 0/1 专项（安全/RLS/幂等/恢复/模型门禁）10 项
     ├── test_full_omnilore_suite.py                  # Phase 0~3 + Ops 综合验收 9 项
     ├── test_w0_launch.py                             # W0 新增回归（引导/LF/版本/降级/合成正交/归因/权限/漂移/CLI/MCP 入口/文档宣称）37 项
-    ├── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）+ R-05m（证据包导出）/ R-08b 补课（21 条策略注释）+ 跨进程导出 + 真实 PG 例外证据性质守卫 60 项
+    ├── test_w2_w3_roadmap.py                        # W2/W3 新增（P2 主权/诚实标注/贡献入口）+ W4（R-08b 真实 PG 集成 CI 配置守卫）+ R-05m（证据包导出）/ R-08b 补课（21 条策略注释）+ 跨进程导出 + 真实 PG 例外证据性质守卫 61 项
     ├── test_w6_provider_and_platform.py             # W6 新增：R-04b 向量来源抽象 / 四个环境变量真的生效 / 维度守卫 / 降级回归；R-11b 统一数据目录 + arm64 CI 守卫 30 项
     └── test_pg_runtime_wiring.py                    # PG 运行时接线：内存引擎默认 + 拒绝超用户/BYPASSRLS 连接角色 5 项
 ```
@@ -329,18 +329,18 @@ python -m unittest discover -s tests -p "test_*.py" -v
 # 等价：make verify
 ```
 
-**151 个测试用例**，全部离线运行，不需要数据库或 API Key：
+**152 个测试用例**，全部离线运行，不需要数据库或 API Key：
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---|---|
 | `test_omnilore_phase0_acceptance.py` | 10 项 | Phase 0/1 专项：安全、RLS（跑在内存仿真引擎上，`Simulated`）、幂等、崩溃恢复、模型门禁 |
 | `test_full_omnilore_suite.py` | 9 项 | Phase 0~3 + Ops 综合验收 |
 | `test_w0_launch.py` | 37 项 | **W0 新增**：引导幂等与 token 复用、LF 规范化、版本号一致、零 Key 降级、供应商故障降级、CLI/MCP 路径解析一致、CLI 端到端、MCP stdio 入口握手、`OMNILORE_AUTO_BOOTSTRAP=0` 不废既有 token |
-| `test_w2_w3_roadmap.py` | 60 项 | 主权配置、诚实标注、贡献入口、真实 PG 集成 CI 配置守卫（该 job 已真实运行、连续 2 次绿灯，故标 `Tested-real`）、证据包字段与篡改、21 条 RLS 策略注释、4 条跨进程导出、两条真实 PG 例外的证据性质守卫 |
+| `test_w2_w3_roadmap.py` | 61 项 | 主权配置、诚实标注、贡献入口、真实 PG 集成 CI 配置守卫（该 job 已真实运行、连续 2 次绿灯，故标 `Tested-real`）、证据包字段与篡改、21 条 RLS 策略注释、4 条跨进程导出、两条真实 PG 例外的证据性质守卫 |
 | `test_w6_provider_and_platform.py` | 30 项 | provider 抽象、四个环境变量真实生效、维度守卫、降级回归、统一数据目录、arm64 CI 配置守卫 |
 | `test_pg_runtime_wiring.py` | 5 项 | PG 运行时接线（`Implemented`，离线 mock 钉住；真实 PG 证据见 `tools/verify_rls_app_role.py`）：默认内存引擎、无 DATABASE_URL 不接 PG、拒绝超用户/BYPASSRLS 连接角色 |
 
-> ⚠️ **这 151 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
+> ⚠️ **这 152 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
 > 它与 PostgreSQL RLS **同构**，但**不是真实 PostgreSQL** —— 所以它们证明的是**逻辑正确性**，
 > 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS 相关能力一律标注 `Simulated` ——
 > **两条例外**（都在真实 PostgreSQL 16.15 上取过证，但**证据性质不同**）：
@@ -361,7 +361,7 @@ OmniLore 支持 **x86_64 与 arm64** 两种 CPU 架构，验证方式不同，�
 | 架构 | 状态 | 验证方式 |
 |---|---|---|
 | `x86_64`（Linux / Windows；macOS Intel 为兼容目标） | `Tested-real`（Linux / Windows） | CI 离线矩阵为 `ubuntu-latest` × `windows-latest` × Python 3.11/3.12；当前没有 macOS job，**不得把 macOS 写成已验证** |
-| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Implemented` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 151 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），但**只有 1 次绿灯、样本尚少**，故仍标 `Implemented`；本项目对「CI 类条目升 `Tested-real`」的门槛是**连续 ≥2 次绿灯**，达到后再评估升级 |
+| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Implemented` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 152 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），但**只有 1 次绿灯、样本尚少**，故仍标 `Implemented`；本项目对「CI 类条目升 `Tested-real`」的门槛是**连续 ≥2 次绿灯**，达到后再评估升级 |
 
 > 为什么 arm64 单独一个 job 而不是并进矩阵：`integration-rls` 刻意留在 x86（真实 PostgreSQL
 > service container）。在 arm64 上同时引入「新架构 + 新服务容器」两个变量，一旦红了分不清是谁的锅。
