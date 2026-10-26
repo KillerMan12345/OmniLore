@@ -112,6 +112,20 @@ OmniLore 重视每一个安全问题。**请不要**把安全漏洞发到公开 
   最后才移除继承，任一步失败即 `icacls /reset` 回滚 —— **绝不会把文件锁死**。
 - 收紧失败不会阻断引导流程，只会发出一条 `RuntimeWarning`。
 
+**这条缓解措施的边界（务必一并读）**：
+
+- 它防的是**同机其他普通账户**，**不防本机管理员**（管理员本来就能取得文件所有权）。
+- 收紧后的可读主体是「运行本服务的那个账户」，外加宿主**以显式 ACE 授予**的受信任主体。
+  具体地：`icacls /inheritance:r` 依设计只移除**继承**而来的 ACE，若宿主在父目录
+  （如某些 CI runner 的临时目录）用**显式** ACE 授予了 `NT AUTHORITY\SYSTEM` 或
+  `BUILTIN\Administrators`，这两条会被保留 —— 它们属受信任主体，不影响上述防护目标。
+  因此不要据此认为「收紧后文件只有 owner 能读」。
+- 对应的回归守卫（`tests/test_w0_launch.py::_assert_file_is_tightened`）断言的是
+  **安全不变量**而非某环境的 ACL 指纹：不含 `Everyone` / `BUILTIN\Users` /
+  `Authenticated Users`，且不含任何 `(I)` 继承标记（证明继承确实被移除）。
+  早期版本把 `SYSTEM` / `Administrators` 当作「必须消失」的锚点，在显式 ACE 的宿主上
+  必然误报（GitHub 的 `windows-latest` runner 即是），已修正。
+
 **不这样做会怎样**：Windows 上该文件会被同机其他账户读取。
 
 **你可以怎么做**：若不接受明文落盘，请将 token 放在 MCP 客户端的环境变量

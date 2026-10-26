@@ -135,13 +135,39 @@ class TestBootstrapIdempotency(unittest.TestCase):
             unsup = [w for w in caught if "无法收紧" in str(w.message)]
             self.assertTrue(unsup or not caught, f"出现无法解释的 warning: {[str(w.message) for w in caught]}")
 
+    #: 收紧后不该还能读到 owner token 的主体 —— 即「同机其他账户」。
+    #: 这与 `SECURITY.md` 第 6.1 节的承诺一致（原文：移除继承 ACE，系统会继承
+    #: `Everyone` / `BUILTIN\Users`）。**刻意不包含** `NT AUTHORITY\SYSTEM` 与
+    #: `BUILTIN\Administrators`：二者是受信任主体（管理员本来就能拿所有权），
+    #: 且在部分宿主上它们是**显式** ACE，`icacls /inheritance:r` 依设计不会移除
+    #: 显式 ACE —— 拿它们当锚点会让守卫依赖「该环境的临时目录一定是继承 ACL」
+    #: 这个不成立的前提（GitHub 的 windows runner 就是这样红的）。
+    UNTRUSTED_ACE_PRINCIPALS = ("Everyone", "BUILTIN\\Users", "Authenticated Users")
+
+    def _icacls_text(self, path: Path) -> str:
+        """返回 `icacls <path>` 的输出文本（仅 Windows 调用）。"""
+        listing = subprocess.run(["icacls", str(path)], capture_output=True, check=False, timeout=30)
+        return (listing.stdout or b"").decode("utf-8", "replace")
+
     def _assert_file_is_tightened(self, path: Path, unsupported_ok: bool = True) -> None:
         """共用断言：确认 `path` 的权限**真的**被收紧了。
 
-        Windows 锚点必须是「收紧前存在、收紧后消失」的 ACE —— `tempfile` 目录的
-        **默认** ACL 里没有 Everyone/BUILTIN\\Users（断言它们为空是空转断言，
-        QA 实测指出），但**确实**有 NT AUTHORITY\\SYSTEM 与 BUILTIN\\Administrators
-        的继承 ACE，只有 `/inheritance:r` 真正生效后它们才会消失。
+        断言的是**安全不变量**，不是某个环境的 ACL 指纹 —— 后者曾经把守卫
+        绑死在「临时目录默认用继承 ACL」这个前提上，于是本机（继承）绿、
+        GitHub windows runner（显式）红：
+
+          * POSIX    → mode 必须恰好 `0600`；
+          * Windows  → ① 不含可被同机其他账户读取的主体（`Everyone` /
+                        `BUILTIN\\Users` / `Authenticated Users`）；
+                       ② 不含任何 `(I)` 继承标记 —— 证明 `/inheritance:r` 真的生效；
+                       ③ owner 仍可读**可写**（`ensure_bootstrapped` 每次启动都会重写
+                        该文件，写不进去 MCP 就起不来）。
+
+        为什么「不含 `(I)`」能守住「真正收紧过」：文件刚创建时 ACL 来自父目录继承，
+        `icacls` 会给这些 ACE 打 `(I)`；只有 `/inheritance:r` 成功执行后它们才会消失。
+        所以 no-op / 提前 return / 删掉断继承 三种变异都会被抓到（本机已用变异验证）。
+        注意：本断言**不能**保证在没有继承的宿主上仍有区分度，因此产品侧还额外校验
+        「存在显式 ACE」（`omnilore.bootstrap._has_explicit_ace`），二者互补。
 
         Args:
             path: 被收紧的文件。
@@ -155,14 +181,20 @@ class TestBootstrapIdempotency(unittest.TestCase):
             mode = stat.S_IMODE(path.stat().st_mode)
             self.assertEqual(mode & 0o777, 0o600, f"POSIX 下应为 0600，实为 {oct(mode)}")
             return
-        listing = subprocess.run(["icacls", str(path)], capture_output=True, check=False, timeout=30)
-        text = (listing.stdout or b"").decode("utf-8", "replace")
-        if unsupported_ok and not text.strip():
-            self.skipTest("宿主无法提供 icacls 输出，跳过 ACE 断言")
-        self.assertNotIn("NT AUTHORITY\\SYSTEM", text, "收紧后不应残留继承的 SYSTEM ACE")
-        self.assertNotIn("BUILTIN\\Administrators", text, "收紧后不应残留继承的 Administrators ACE")
-        self.assertNotIn("Everyone", text, "收紧后不应残留 Everyone ACE")
-        self.assertNotIn("BUILTIN\\Users", text, "收紧后不应残留 BUILTIN\\Users ACE")
+        text = self._icacls_text(path)
+        if not text.strip():
+            if unsupported_ok:
+                self.skipTest("宿主无法提供 icacls 输出，跳过 ACE 断言")
+            self.fail("拿不到 icacls 输出，无法证明权限已收紧（不能默认通过）")
+        for principal in self.UNTRUSTED_ACE_PRINCIPALS:
+            self.assertNotIn(
+                principal, text,
+                f"收紧后不应残留可被同机其他账户读取的 ACE：{principal}",
+            )
+        self.assertNotIn(
+            "(I)", text,
+            "收紧后不应残留继承 ACE（出现 (I) 说明 /inheritance:r 没生效）",
+        )
 
     def test_bootstrap_state_file_is_tightened_end_to_end(self) -> None:
         """端到端守卫：bootstrap 真正产出的 token 文件必须是被收紧过的。
@@ -209,26 +241,12 @@ class TestBootstrapIdempotency(unittest.TestCase):
 
         unsupported = any("无法收紧" in str(w.message) for w in caught)
 
-        if os.name == "nt":
-            if not unsupported:
-                listing = subprocess.run(
-                    ["icacls", str(secret)], capture_output=True, check=False, timeout=30
-                )
-                text = (listing.stdout or b"").decode("utf-8", "replace")
-                # 锚点必须是「收紧前存在、收紧后消失」的 ACE。
-                # 注意：`tempfile` 目录下的**默认** ACL 里根本没有 Everyone / BUILTIN\Users，
-                # 所以断言「不含 Everyone」在完全没收紧时也会通过 —— 那是空转断言（QA 实测）。
-                # 该目录默认**确实**带 NT AUTHORITY\SYSTEM 与 BUILTIN\Administrators 的
-                # 继承 ACE，它们只有在 `/inheritance:r` 真正生效后才会消失，
-                # 因此用它们做锚点，no-op / 提前 return / 删掉断继承 三种变异都会被抓到。
-                self.assertNotIn("NT AUTHORITY\\SYSTEM", text, "收紧后不应残留继承的 SYSTEM ACE")
-                self.assertNotIn("BUILTIN\\Administrators", text, "收紧后不应残留继承的 Administrators ACE")
-                self.assertNotIn("Everyone", text, "收紧后不应残留 Everyone ACE")
-                self.assertNotIn("BUILTIN\\Users", text, "收紧后不应残留 BUILTIN\\Users ACE")
-        else:
-            if not unsupported:
-                mode = stat.S_IMODE(secret.stat().st_mode)
-                self.assertEqual(mode & 0o777, 0o600, f"POSIX 下应为 0600，实为 {oct(mode)}")
+        # 断言集中在共用的 `_assert_file_is_tightened`：POSIX 校验 0600，
+        # Windows 校验「无可被其他账户读取的主体 + 无 (I) 继承标记」。
+        # 这里不再各写一份 —— 曾经两份实现不一致（一份按平台分支、一份先调
+        # icacls 再分支），正是 P0 与 CI 红灯的来源。
+        if not unsupported:
+            self._assert_file_is_tightened(secret, unsupported_ok=False)
 
         # 读写双向都必须可用（跨进程重写场景）
         self.assertEqual(json.loads(secret.read_text(encoding="utf-8")), {"k": "v"}, "收紧后 owner 必须仍可读")

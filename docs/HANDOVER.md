@@ -247,29 +247,41 @@ ruff check omnilore tests tools
 优先级：**P0** 阻塞发布或违反红线 ｜ **P1** 首发窗口内 ｜ **P2** 首发后 ｜ **Q2** 下季度
 执行者：**A** = agent 可自主完成 ｜ **M** = 维护者（需真人 / 凭证 / 出境）｜ **A+M** = 需配合
 
-### T1（P0，A+M）修 `windows-latest` 的 2 个 CI job —— **仍未解决**
+### T1（P0，A）修 `windows-latest` 的 2 个 CI job —— **已解决（2026-10-26）**
 
-> **复验结果（2026-10-26，CI Run #4，commit `bf619c8`）：`windows-latest` py3.11 / py3.12 仍然红。**
-> 同一次运行里 `ubuntu-latest` ×2、`arm64`、`lint`、`DCO`、`integration-rls` 全部绿
-> （`integration-rls` 已连续 3 次绿灯）。也就是说：下面这套代码页修复**落地后并未消除**
-> CI 上 windows 的失败 —— 它可能只解释了其中的**一部分**用例，或者 CI 环境里还有别的成因。
+> **根因：守卫本身依赖了一个不成立的环境前提，不是产品缺陷。**
+> 失败只有 2 条、都是权限守卫，断言「收紧后不应残留 `NT AUTHORITY\SYSTEM` /
+> `BUILTIN\Administrators`」。CI 日志里 `icacls` 的实际输出是：
 >
-> **不要再基于「编码假设」继续推断，先拿日志。** 失败点仍是 `step 5`（离线测试）退出码 1：
-> `https://github.com/KillerMan12345/OmniLore/actions/runs/40284630216/job/121445301101`（py3.11）
-> 与 `.../job/121445301180`（py3.12）。job 日志 API 需 admin（返回 403），
-> **只能由维护者从网页复制 `FAIL:` / `ERROR:` 与紧随的 traceback**。
+> ```
+> ...\bootstrap.json NT AUTHORITY\SYSTEM:(F)
+>                    BUILTIN\Administrators:(F)
+>                    runnervmdaln5\runneradmin:(F)
+> ```
 >
-> 已排除的方向（别再试）：① 临时目录带**显式** Everyone ACE（父目录显式 ACE 在子文件上是继承型，
-> `/inheritance:r` 照样清除）；② Windows**平台 API 缺失**（`icacls` / `whoami` 在 runner 上存在，
-> 且 Linux 侧的无条件调用已于 `5d513fe` 修掉）。
+> 注意这些 ACE **没有 `(I)` 标记** —— 它们是**显式** ACE；而 `icacls /inheritance:r`
+> 依设计只移除**继承** ACE，移除不了显式 ACE。本机临时目录是继承 ACL（带 `(I)`），
+> 所以断言成立；GitHub runner 的临时目录是显式 ACL，所以必然红。
+> 早先「证伪过」的那条实验只测了 `Everyone` 显式 ACE，**没有覆盖 SYSTEM /
+> Administrators 显式**的情形 —— 实际出问题的正是后者。
 >
-> 接手建议：拿到日志后，先用 `PYTHONIOENCODING=cp1252` + `PYTHONUTF8=1` 两种组合各跑一遍本地全量，
-> 看能否复现；不能复现就说明是 runner 独有因素（PowerShell 默认 shell、`D:\a\_temp` 路径、
-> `runneradmin` 账户 ACL、或 `actions/checkout` 的 `core.autocrlf`），需按日志逐条比对。
+> **修法（改守卫，不改产品）**：`_assert_file_is_tightened()` 改为断言**安全不变量**：
+> ① 不含 `Everyone` / `BUILTIN\Users` / `Authenticated Users`；
+> ② 不含任何 `(I)` 继承标记（这才是「`/inheritance:r` 真的生效」的证据）；
+> ③ owner 仍可读可写；④ 拿不到 `icacls` 输出时**显式失败**，不允许默认通过。
+> `test_permissions_are_actually_tightened` 改为复用同一助手 —— 此前两份实现不一致
+> （一份按平台分支、一份先调 `icacls` 再分支），这是 P0 反复出现的结构性原因。
+>
+> **顺带修正 `SECURITY.md` 6.1**：写明「只移除继承 ACE；宿主以显式 ACE 授予的
+> SYSTEM / Administrators 会保留。因此本措施防的是同机其他普通账户，**不防本机
+> 管理员**」—— 此前文档的措辞容易被读成「收紧后只有 owner 能读」。
+>
+> **变异验证（本次实测）**：整段 no-op → 红；删掉 `/inheritance:r` → 红
+> （`FAILED (failures=2)`）；还原后 `git diff` 为空。
+> **双平台全量**：Windows（Py3.13）151 OK；WSL Ubuntu（Py3.12）151 OK。
 
-以下是**已落地但未能消除 CI 失败**的代码页分析与修复，保留作为线索（不是结论）。
-
-**原始假设（本机可复现，但不是 CI 的完整成因）：代码页，不是逻辑。**
+**以下代码页分析与修复是另一个真实缺陷**（cp1252 宿主上子进程打印中文会
+`UnicodeEncodeError`，本机可复现），与本条 CI 红灯的根因**不同**，保留作线索。
 
 - `windows-latest` 的 runner 是 **en-US**，locale 编码 **cp1252**；ubuntu / arm64 是 UTF-8；
   开发者本机是 zh-CN（cp936）。而本项目**所有面向用户的文案都是中文**。
@@ -481,6 +493,7 @@ G2 门禁要求先手动跑一次 demo 并存档输出。
 | 31 | **T3 代码落地但未进日志、未验证** | `omnilore/pg_engine.py`（新增）、`omnilore/engine.py:1667`、`sql/001`（+19）、`tests/test_t3_pg_backend.py`（新增） | 又一轮外部会话实现 `PgDatabaseEngine` 并按 `DATABASE_URL` 接线，**但没有更新第 19–30 条日志、也没有更新任何文档**。我复核：151 项仍全绿、ruff 绿、无硬编码凭据；`test_t3_pg_backend.py` 是**手动 smoke 脚本**（无 `TestCase`，`discover` 不执行，需真实 PG）。**故未升级任何「持久化」口径**（无 CI/自动化证据），改为在 T3 段落写明「代码已落地、未验证、文档刻意不升级」并给出接手动作 |
 | 32 | **提交并推送** | 22 文件（+1303 / −241） | `git diff --check` 报了 9 处行尾空白（`engine.py` 的 `_record_audit(...)` 续行），已清；151 项复跑全绿后提交 `bf619c8` 并推送 |
 | 33 | **CI Run #4 复验 → 修正 T1 的错误结论** | `docs/HANDOVER.md`（T1 段落） | Run #4：ubuntu ×2 / arm64 / lint / DCO / `integration-rls` ✅（RLS 第 3 次绿灯），**`windows-latest` ×2 仍红**。据此把 T1 由「根因已定位并修复」改为「**仍未解决**」，并补上：已排除方向、需维护者提供日志的两个 job 链接、接手排查建议（runner 独有因素：默认 shell / `D:\a\_temp` / `runneradmin` ACL / `core.autocrlf`） |
+| 34 | **T1 根因定位并修复** | `tests/test_w0_launch.py`、`SECURITY.md`、`docs/HANDOVER.md` | 维护者贴来 CI 日志：失败仅 2 条权限守卫，`icacls` 输出里 `NT AUTHORITY\SYSTEM:(F)` / `BUILTIN\Administrators:(F)` **没有 `(I)`** → 是**显式** ACE，而 `/inheritance:r` 依设计只移除继承 ACE。根因是**守卫挑了环境相关的锚点**，不是产品缺陷。守卫改为断言安全不变量（无 `Everyone`/`Users`/`Authenticated Users` + 无 `(I)` + owner 可读写 + 取不到输出时显式失败），两份实现合并为一个助手；`SECURITY.md` 6.1 补写真实边界（保留显式 SYSTEM/Admins，不防本机管理员）。变异 2/2 变红；Windows 151 OK、WSL 151 OK |
 
 
 **更早的历史**（W0 首发准备、W2–W3、R-05m、R-08b、R-04b、PG 安全连接层等）见 `git log` 与 `CHANGELOG.md`。
