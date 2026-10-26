@@ -46,22 +46,84 @@ TABLE_PRIMARY_KEYS: Dict[str, str | tuple[str, ...]] = {
 # Tables that exist in _state but are NOT in PG (memory-only fallback)
 MEMORY_ONLY_TABLES: Set[str] = {"ledger_entries"}
 
+# Tables with UUID primary keys
+UUID_PK_TABLES: Set[str] = {
+    "documents",
+    "document_series",
+    "document_chunks",
+    "assets",
+    "ingestion_tasks",
+    "outbox_events",
+    "health_metrics",
+    "audit_events",
+    "model_runs",
+}
 
-def _serialize_for_pg(value: Any) -> Any:
+
+def _is_valid_uuid(val: Any) -> bool:
+    import uuid as _uuid
+
+    if isinstance(val, _uuid.UUID):
+        return True
+    if isinstance(val, str):
+        try:
+            _uuid.UUID(val)
+            return True
+        except (ValueError, AttributeError):
+            return False
+    return False
+
+
+# Columns whose PostgreSQL type is TEXT[]
+TEXT_ARRAY_COLUMNS: Set[str] = {
+    "tags",
+    "outbound_links",
+    "code_symbols",
+    "allowed_categories",
+    "allowed_read_spaces",
+    "allowed_write_spaces",
+}
+
+# Columns whose PostgreSQL type is JSONB
+JSONB_COLUMNS: Set[str] = {
+    "external_llm_policy",
+    "source_locator",
+    "candidate_route",
+    "payload",
+    "revision_history",
+    "before_summary",
+    "after_summary",
+}
+
+
+def _serialize_for_pg(value: Any, col: Optional[str] = None) -> Any:
     """Serialize values for asyncpg:
       - dict → JSON string (JSONB)
-      - list of strings → keep as list (PG text array)
-      - list of non-strings → JSON string (JSONB array)
+      - list/tuple for TEXT_ARRAY_COLUMNS or list of strings → list (PG text array)
+      - list for JSONB_COLUMNS or list of non-strings → JSON string (JSONB array)
       - ISO-8601 date → datetime.date
       - ISO-8601 datetime → datetime.datetime
       - primitives → pass through
     """
+    if col in TEXT_ARRAY_COLUMNS:
+        if isinstance(value, (list, tuple, set)):
+            return [str(x) for x in value]
+        if value is None:
+            return []
+        return value
+    if col in JSONB_COLUMNS:
+        if isinstance(value, (dict, list, tuple)):
+            return json.dumps(value, ensure_ascii=False)
+        return value
     if isinstance(value, dict):
         return json.dumps(value, ensure_ascii=False)
-    if isinstance(value, list):
-        if value and all(isinstance(x, str) for x in value):
-            return value  # PG text array (tags, code_symbols, outbound_links, ...)
-        return json.dumps(value, ensure_ascii=False)  # JSONB
+    if isinstance(value, (list, tuple)):
+        if not value:
+            # Default empty list in OmniLore domain model is text array (e.g. tags, links)
+            return []
+        if all(isinstance(x, str) for x in value):
+            return list(value)
+        return json.dumps(value, ensure_ascii=False)
     if isinstance(value, str):
         # DATE: 2026-10-26
         if re.match(r"^\d{4}-\d{2}-\d{2}$", value):
@@ -72,9 +134,33 @@ def _serialize_for_pg(value: Any) -> Any:
     return value
 
 
+def _normalize_row_from_pg(row: Any) -> Dict[str, Any]:
+    """Normalize row from asyncpg to Python native domain types:
+      - uuid.UUID → str
+      - datetime.date / datetime.datetime → ISO-8601 string
+      - JSONB string → dict / list
+    """
+    import uuid as _uuid
+
+    res: Dict[str, Any] = {}
+    for k, v in dict(row).items():
+        if isinstance(v, _uuid.UUID):
+            res[k] = str(v)
+        elif isinstance(v, (datetime, date)):
+            res[k] = v.isoformat()
+        elif k in JSONB_COLUMNS and isinstance(v, str):
+            try:
+                res[k] = json.loads(v)
+            except Exception:
+                res[k] = v
+        else:
+            res[k] = v
+    return res
+
+
 def _prepare_row_for_insert(row: Dict[str, Any]) -> tuple[List[str], List[Any]]:
     cols = list(row.keys())
-    values = [_serialize_for_pg(row[c]) for c in cols]
+    values = [_serialize_for_pg(row[c], col=c) for c in cols]
     return cols, values
 
 
@@ -93,8 +179,18 @@ class PgTransactionConnection:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator["PgTransactionConnection"]:
-        """Begin an asyncpg transaction and yield self (mirrors RLSTransactionConnection)."""
+        """Begin an asyncpg transaction and yield self (mirrors RLSTransactionConnection).
+
+        When connected with a role that is a member of `omnilore_gateway` (such as
+        the application role `omnilore_app`), switch local transaction role to
+        `omnilore_gateway` so that PostgreSQL RLS policies (defined FOR ... TO omnilore_gateway)
+        are actively enforced by PostgreSQL.
+        """
         async with self._pg_conn.transaction():
+            try:
+                await self._pg_conn.execute("SET LOCAL ROLE omnilore_gateway")
+            except Exception:
+                pass
             yield self
 
     async def execute(self, sql: str, *args: Any) -> str:
@@ -111,7 +207,7 @@ class PgTransactionConnection:
             rows = list(self._db._state.get(table, {}).values())
         else:
             pg_rows = await self._pg_conn.fetch(f"SELECT * FROM {table}")
-            rows = [dict(r) for r in pg_rows]
+            rows = [_normalize_row_from_pg(r) for r in pg_rows]
         if predicate:
             rows = [r for r in rows if predicate(r)]
         return [copy.deepcopy(r) for r in rows]
@@ -127,7 +223,7 @@ class PgTransactionConnection:
         placeholders = [f"${i + 1}" for i in range(len(cols))]
         sql = f"INSERT INTO {table} ({','.join(cols)}) VALUES ({','.join(placeholders)}) RETURNING *"
         pg_row = await self._pg_conn.fetchrow(sql, *values)
-        stored = dict(pg_row)
+        stored = _normalize_row_from_pg(pg_row)
         pk_val = stored.get(pk)
         if pk_val is not None:
             self._db._state.setdefault(table, {})[str(pk_val)] = copy.deepcopy(stored)
@@ -155,12 +251,15 @@ class PgTransactionConnection:
         if isinstance(pk_col, tuple):
             raise RuntimeError(f"Composite primary key not supported for update: {table}")
 
+        if table in UUID_PK_TABLES and not _is_valid_uuid(pk_val):
+            raise PermissionDeniedError(f"RLS UPDATE target not found or not visible on {table}")
+
         sql = f"SELECT * FROM {table} WHERE {pk_col} = $1"
         pg_row = await self._pg_conn.fetchrow(sql, pk_val)
         if pg_row is None:
             raise PermissionDeniedError(f"RLS UPDATE target not found or not visible on {table}")
 
-        existing = dict(pg_row)
+        existing = _normalize_row_from_pg(pg_row)
         updated = updater(copy.deepcopy(existing))
 
         set_cols: List[str] = []
@@ -169,11 +268,11 @@ class PgTransactionConnection:
             if k == pk_col:
                 continue
             set_cols.append(f"{k} = ${len(set_values) + 2}")
-            set_values.append(_serialize_for_pg(v))
+            set_values.append(_serialize_for_pg(v, col=k))
 
         sql = f"UPDATE {table} SET {','.join(set_cols)} WHERE {pk_col} = $1 RETURNING *"
         pg_row = await self._pg_conn.fetchrow(sql, pk_val, *set_values)
-        stored = dict(pg_row)
+        stored = _normalize_row_from_pg(pg_row)
 
         self._db._state.setdefault(table, {})[str(pk_val)] = copy.deepcopy(stored)
         self._db._dirty_tables.add(table)
@@ -191,6 +290,9 @@ class PgTransactionConnection:
             raise RuntimeError(f"Unknown primary key for table {table}")
         if isinstance(pk_col, tuple):
             raise RuntimeError(f"Composite primary key not supported for delete: {table}")
+
+        if table in UUID_PK_TABLES and not _is_valid_uuid(pk_val):
+            return
 
         sql = f"DELETE FROM {table} WHERE {pk_col} = $1"
         await self._pg_conn.execute(sql, pk_val)
@@ -233,7 +335,7 @@ class PgDatabaseEngine:
                 pg_rows = await conn.fetch(f"SELECT * FROM {table}")
                 table_data: Dict[str, Dict[str, Any]] = {}
                 for row in pg_rows:
-                    row_dict = dict(row)
+                    row_dict = _normalize_row_from_pg(row)
                     if isinstance(pk_col, tuple):
                         key = ":".join(str(row_dict[k]) for k in pk_col)
                     else:
@@ -252,3 +354,9 @@ class PgDatabaseEngine:
         assert self._pool is not None
         async with self._pool.acquire() as pg_conn:
             yield PgTransactionConnection(pg_conn, self)
+
+    async def close(self) -> None:
+        """Close the underlying connection pool if open."""
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None

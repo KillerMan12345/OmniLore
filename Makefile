@@ -15,16 +15,17 @@ PY ?= python
 RUFF ?= $(PY) -m ruff
 
 .DEFAULT_GOAL := help
-.PHONY: help verify test verify-rls verify-rls-pg verify-sync verify-paths \
+.PHONY: help verify test verify-rls verify-rls-pg verify-t3-pg verify-sync verify-paths \
         verify-parsers verify-redaction verify-ops verify-launch verify-mcp \
         verify-degradation verify-lf verify-search verify-audit verify-provider \
         verify-honesty lint
 
 help: ## 列出所有验证入口
-	@echo "OmniLore 验证入口（全部离线，除 verify-rls-pg）"
+	@echo "OmniLore 验证入口（全部离线，除 verify-rls-pg 与 verify-t3-pg）"
 	@echo "  make verify            全量测试（离线）"
 	@echo "  make verify-rls        权限/RLS/版本/同步（内存仿真引擎：只证明逻辑）"
 	@echo "  make verify-rls-pg     真实 PostgreSQL RLS 探针（需 psql + DATABASE_URL，缺失即失败）"
+	@echo "  make verify-t3-pg      真实 PostgreSQL 数据面端到端与 RLS 验证（需 DATABASE_URL）"
 	@echo "  make verify-sync       Obsidian 同步：受保护字段可配 + 冲突副本隐藏目录"
 	@echo "  make verify-paths      文件网关：路径穿越 / 符号链接防御"
 	@echo "  make verify-parsers    多格式入库与代码符号提取"
@@ -146,6 +147,10 @@ verify-honesty:
 verify-rls-pg:
 	@echo ">> $(PY) tools/verify_rls_pg.py（真实 PostgreSQL：exit 0 通过 / 2 未验证 / 3 结论为否）"
 	@$(PY) tools/verify_rls_pg.py
+
+verify-t3-pg:
+	@echo ">> $(PY) tests/test_t3_pg_backend.py（真实 PostgreSQL 数据面端到端与 RLS 验证）"
+	@$(PY) tests/test_t3_pg_backend.py
 
 lint:
 	@echo ">> $(RUFF) check omnilore tests tools"

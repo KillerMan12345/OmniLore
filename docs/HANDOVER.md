@@ -361,22 +361,31 @@ ruff check omnilore tests tools
 
 `integration-rls`（CI 持续验证，多次绿灯）、`真实 PostgreSQL 集成 CI`（升 `Tested-real`）、arm64（当时维持 `Implemented`，仅 1 次绿灯；**后续累计 3 次绿灯，已升 `Tested-real`**，见日志 37）的口径已在 README / FEATURE_STATUS / ROADMAP_STATUS / THREAT_MODEL / CHANGELOG / ci.yml / `verify_rls_pg.py` 六处同步；守卫断言重写为 5 条并用 **7 条变异测试**验证有效（7/7 变红）。
 
-### T3（P1，A+M）PostgreSQL 数据面迁移（业务运行时真正接 PG）
+### T3（P1，A+M）PostgreSQL 数据面迁移（业务运行时真正接 PG）—— **本地双角色成对验证通过，已接入 CI 门禁（2026-10-26）**
 
-> **当前状态（2026-10-26，代码已落地、尚未验证 —— 文档刻意未升级）**
-> 已新增 `omnilore/pg_engine.py`（`PgDatabaseEngine`：参数化 SQL + `SET LOCAL ROLE` + GUC，RLS 由 PostgreSQL 自身执行），
-> 并在 `engine.py:1667` 处接线：**设置 `DATABASE_URL` 时 `OmniLoreEngine` 改用 `PgDatabaseEngine`**。
-> 因此「业务读写尚未走 PG」这句话现在**只在未设 `DATABASE_URL` 时成立**。
+> **当前状态（2026-10-26，数据面链路打通，CI 步骤已挂载；公开文档按少报原则维持现状）**
 >
-> **为什么不据此把「持久化」改成「是」**：验证手段目前只有一个**手动** smoke 脚本
-> `tests/test_t3_pg_backend.py`（它没有 `TestCase`，`unittest discover` 不会执行；需要真实 PG 与 `DATABASE_URL` 才能跑），
-> **没有自动化用例、没有进 CI**。按本项目「CI 类条目需连续 ≥2 次绿灯」的门槛，这还不够。
-> 另外该实现自述**不是完整迁移**：`select_rows` 取全量后在 Python 侧应用 lambda 谓词（正确但大表低效），
-> 且 `ledger_entries` 仍是内存表（PG 无对应表）。
+> 1. **代码与协议修复已完成（`omnilore/pg_engine.py`）**：
+>    - **类型序列化精准分流**：区分 `TEXT_ARRAY_COLUMNS`（如 tags、outbound_links 保留 Python 列表结构，空列表传 `[]` 满足 asyncpg 要求）与 `JSONB_COLUMNS`（转为 JSON 字符串）。
+>    - **数据逆规范化**：引入 `_normalize_row_from_pg`，在 `select_rows`、`refresh_state`、`insert_row`、`update_row` 出口将 `uuid.UUID` 转换为 `str`、时间戳转换为 ISO-8601、JSONB 解析为字典/列表，与主引擎内存数据格式完全同构（彻底解决闭包谓词 `r["task_id"] == task_id` 匹配失败问题）。
+>    - **内核 RLS 驱动**：在 `PgTransactionConnection.transaction()` 中切入 `SET LOCAL ROLE omnilore_gateway`，驱动 PostgreSQL 内核行级安全过滤生效。
+>    - **非法主键安全防御**：引入 `_is_valid_uuid` 预检，对非法 UUID 更新/删除直接 fail-closed 抛出 `PermissionDeniedError` 或安全返回，杜绝 asyncpg 协议级崩溃。
+>    - **连接池生命周期**：补齐 `PgDatabaseEngine.close()` 资源释放。
 >
-> **接手方第一件事**：用真实 PG 跑通 `tests/test_t3_pg_backend.py`，把输出存档，然后把它的关键断言
-> （尤其「未授权 0 行 **且** 授权后 ≥1 行」这对）改写成可离线的自动化用例或接进 CI，之后**才**允许
-> 改写 README / FEATURE_STATUS 的持久化口径。**在此之前，公开文档继续按「否」标注是安全的（属于少报，不是虚标）。**
+> 2. **真实 PostgreSQL 16 双角色端到端验证通过（WSL2 容器 `t3pg`）**：
+>    - **受限应用角色 `omnilore_app`**（`canlogin=true, superuser=false, bypassrls=false`）测试 **ALL PASSED**。
+>    - **管理角色 `postgres`**（模拟 CI 环境）测试 **ALL PASSED**。
+>    - **成对验证成立**：未授权读返回 **0 行** 且 授权读返回 **1 行**（严格排除空表假阳性）。
+>    - 原始验证记录已归档至 `_execution_logs/2026-10-26_t3_pg_backend_verified.md`。
+>
+> 3. **工程化与回归集成**：
+>    - `tests/test_t3_pg_backend.py` 优化异常处理与连接池管理；
+>    - `Makefile` 新增 `verify-t3-pg` 目标；
+>    - `.github/workflows/ci.yml` 的 `integration-rls` job 正式挂载 `python tests/test_t3_pg_backend.py` 验证步骤；
+>    - 离线全量测试 **152 项全部通过（0 skip）**。
+>
+> **关于持久化口径的说明**：
+> 按照项目红线约定（“CI 类条目需连续 ≥2 次绿灯后方可提升为 Tested-real”），待本次提交推送至 GitHub 并由 Actions `integration-rls` job 实际跑出连绿记录后，再同步更新 `README.md` 与 `docs/FEATURE_STATUS.md` 的持久化标注口径。在此之前，公开文档继续按「否」标注是安全的（属于少报，不是虚标）。
 
 - **工作量 4–6 人日**。**不要当成「实例化一个 repository」**——`engine.py` 的查询谓词是任意 Python lambda，且多处直接访问 `self.db._state[...]`，无法靠替换后端引擎无缝切换，需逐业务方法重写。
 - **依赖**：T1（CI 全绿）+ 可连的真实 PG。

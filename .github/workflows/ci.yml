@@ -519,6 +519,11 @@ jobs:
               ;;
           esac
 
+      - name: "T3: PostgreSQL data plane & application RLS end-to-end (python tests/test_t3_pg_backend.py)"
+        run: |
+          set -euo pipefail
+          python tests/test_t3_pg_backend.py
+
       - name: "Diagnostics (only on failure): dump RLS / policy state"
         if: failure()
         run: |
