@@ -9,8 +9,8 @@
 | 对应 commit | 见 `git log` 最新一条（本文数字以该 commit 为准） |
 | 版本 | `v0.3.0-alpha`（PEP 440：`0.3.0a0`） |
 | 公开仓库 | https://github.com/KillerMan12345/OmniLore |
-| 测试 | 152 项，0 failure / 0 error / 0 skip |
-| 追踪文件 | 68 个（19 个 Python 源码 / 10 份文档 / 7 个测试文件 / 4 个工具） |
+| 测试 | 168 项，0 failure / 0 error / 0 skip |
+| 追踪文件 | 77 个（23 个 Python 源码 / 10 份文档 / 12 个测试文件 / 4 个工具） |
 | CI | 7 个 job，其中 `windows-latest` 的 2 个**仍失败**（见 T1） |
 
 ---
@@ -25,7 +25,7 @@ git clone https://github.com/KillerMan12345/OmniLore.git && cd OmniLore
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 python -m pip install -e ".[dev]"
 
-# 3. 确认基线绿（必须 152 项、0 skip）
+# 3. 确认基线绿（必须 168 项、0 skip）
 python -m unittest discover -s tests -p "test_*.py" -v
 
 # 4. 确认零 Key 端到端可用
@@ -173,16 +173,20 @@ ruff check omnilore tests tools
 
 ## 4. 重要文件路径地图
 
-### 4.1 源码（`omnilore/`，19 个文件）
+### 4.1 源码（`omnilore/`，23 个文件）
 
 | 文件 | 行数 | 职责 / 注意 |
 |---|---|---|
-| `engine.py` | 3489 | **全库最大**，主引擎 + 业务逻辑。贡献者心理门槛来源；架构级重构条件化到贡献者 ≥10 人才做 |
+| `engine.py` | 3500+ | **全库最大**，主引擎 + 业务逻辑。已接入 Token 预算治理、二级分块下钻与防幻觉引用比对 |
+| `context_budget.py` | 130 | **理念一**：Token 预算治理、轻量字符估算、长代码块结构化折叠 |
+| `citation.py` | 135 | **理念二**：防幻觉事实引用比对、三态判定（`VERIFIED`/`PARTIAL`/`UNVERIFIED`） |
+| `evolution_chain.py` | 160 | **理念三**：版本因果演化链 DAG 与 MRP 变更预审建议 |
+| `storage_contract.py` | 170 | **理念五**：最小存储后端抽象 `StorageBackend` Protocol 与能力声明 |
 | `audit_bundle.py` | 900 | 审计证据包导出 |
 | `bootstrap.py` | 691 | 首启引导、token 签发、**文件权限收紧**（Windows `icacls` 分支） |
 | `embedding_provider.py` | 446 | provider 抽象（4 种实现） |
 | `cli.py` | 441 | CLI：`bootstrap` / `demo` / `version` / `audit-bundle` |
-| `mcp_stdio_server.py` | 382 | MCP stdio，7 个工具；设了 `DATABASE_URL` 才建安全 PG 连接 |
+| `mcp_stdio_server.py` | 400 | MCP stdio，7 个工具（**理念四**：区分 query 与 governance 分层并支持过滤） |
 | `parsers.py` | 359 | 多格式解析（纯函数，**新贡献者入手首选**） |
 | `ops_manager.py` | 239 | 备份恢复 / 运维 |
 | `__init__.py` | 236 | 导出（含 PEP 562 惰性导出，避免循环导入） |
@@ -212,7 +216,7 @@ ruff check omnilore tests tools
 | `tools/mutation_check.py` | 变异测试工具。**必须副本模式**（历史上曾改坏活仓库） |
 | `Makefile` | 19 个目标（`help` + 17 个 `verify-*` + `test` + `lint`） |
 | `n8n/workflows/` | 3 条工作流 JSON（结构已验证，未真实导入运行） |
-| `tests/` | 7 个文件：9 / 10 / 5 / **37** / **61** / 30 = **152** |
+| `tests/` | 12 个文件：168 项测试全部通过（0 skip） |
 
 ### 4.3 不随公开仓库分发的内容（已 `.gitignore`）
 
@@ -348,7 +352,7 @@ ruff check omnilore tests tools
 
 **仍未验证（不要写成已修好）**：**没有推送、没有重新跑 CI**。T1 的验收条件
 「推送后 CI 全绿」尚未达成，本机证据只能证明「复现 + 修复 + 守卫有效」。
-维护者推送后请确认 `windows-latest` 两个 job 转绿且 152 项 0 skip。
+维护者推送后请确认 `windows-latest` 两个 job 转绿且 168 项 0 skip。
 另外：若 CI 仍红，`test` job 新增的 `Diagnostics (only on failure)` 步骤会自动把
 账户、临时目录、`icacls` ACL 一次性打进日志 —— 下一轮不必再从网页里捞日志。
 
@@ -392,7 +396,7 @@ ruff check omnilore tests tools
 - **验收**：
   1. 业务读写落 PostgreSQL；RLS 在应用路径上仍生效 —— **必须成对验证**：未授权 0 行 **且** 授权后同一条 ≥1 行（后者排除「表本来就是空的」假阳性）
   2. 不设 `DATABASE_URL` 时行为与现在完全一致（仍内存引擎），用测试钉住
-  3. 152+ 项全绿
+  3. 168+ 项全绿
   4. **只有以上全部成立**，文档才允许改写「持久化」口径
 
 ### T4（P1，A）`docker-compose.yml` 角色同名隐患 —— **已通过真实 Docker 验收（2026-10-26）**

@@ -33,7 +33,8 @@ MCP_TOOL_DEFINITIONS = [
         "description": (
             "Authorized retrieval over current knowledge versions: hybrid search (BM25 + 1024d vector + code "
             "symbols) when DASHSCOPE_API_KEY is configured; automatically degrades to BM25/keyword-only when it "
-            "is not. Responses carry `retrieval_mode` (`hybrid`|`keyword_only`) and `degraded_reason`."
+            "is not. Responses carry `retrieval_mode` (`hybrid`|`keyword_only`), `degraded_reason`, and "
+            "`budget_governance` token allocation telemetry."
         ),
         "inputSchema": {
             "type": "object",
@@ -45,19 +46,25 @@ MCP_TOOL_DEFINITIONS = [
                 "categories": {"type": "array", "items": {"type": "string"}},
                 "code_symbol": {"type": "string"},
                 "include_history": {"type": "boolean", "default": False},
+                "token_budget": {
+                    "type": "integer",
+                    "default": 1500,
+                    "description": "Max token budget for returned chunks. Set to 0 or negative for unconstrained full text.",
+                },
             },
         },
     },
     {
         "name": "get_document_asset",
-        "description": "Retrieve full Wiki Markdown or original raw asset by controlled doc_id (no bare file paths).",
+        "description": "Retrieve full Wiki Markdown, original raw asset, or an un-folded chunk (by chunk_id/doc_id) without bare file paths.",
         "inputSchema": {
             "type": "object",
             "required": ["token", "doc_id"],
             "properties": {
                 "token": {"type": "string"},
                 "doc_id": {"type": "string"},
-                "asset_type": {"type": "string", "enum": ["WIKI", "RAW_ASSET"], "default": "WIKI"},
+                "asset_type": {"type": "string", "enum": ["WIKI", "RAW_ASSET", "CHUNK"], "default": "WIKI"},
+                "chunk_id": {"type": "string"},
             },
         },
     },
@@ -142,6 +149,18 @@ MCP_TOOL_DEFINITIONS = [
 ]
 
 
+MCP_TOOL_TIERS = {
+    "QUERY": "query",           # Read-only, budget-governed consumption for all external agents
+    "GOVERNANCE": "governance", # State-modifying, audited administrative operations
+}
+
+for _tool in MCP_TOOL_DEFINITIONS:
+    if _tool["name"] in ("search_knowledge", "get_document_asset", "query_health_trends"):
+        _tool["tier"] = MCP_TOOL_TIERS["QUERY"]
+    else:
+        _tool["tier"] = MCP_TOOL_TIERS["GOVERNANCE"]
+
+
 class MCPJsonRpcServer:
     def __init__(self, gateway: OmniLoreMCPGateway):
         self.gateway = gateway
@@ -163,10 +182,15 @@ class MCPJsonRpcServer:
                     },
                 }
             if method == "tools/list":
+                tier_filter = params.get("tier")
+                if tier_filter:
+                    matched_tools = [t for t in MCP_TOOL_DEFINITIONS if t.get("tier") == tier_filter]
+                else:
+                    matched_tools = MCP_TOOL_DEFINITIONS
                 return {
                     "jsonrpc": "2.0",
                     "id": req_id,
-                    "result": {"tools": MCP_TOOL_DEFINITIONS},
+                    "result": {"tools": matched_tools},
                 }
             if method == "tools/call":
                 tool_name = params.get("name")
@@ -205,9 +229,15 @@ class MCPJsonRpcServer:
                 categories=args.get("categories"),
                 code_symbol=args.get("code_symbol"),
                 include_history=bool(args.get("include_history", False)),
+                token_budget=args.get("token_budget", 1500),
             )
         if tool_name == "get_document_asset":
-            res = await self.gateway.get_document_asset(token, args["doc_id"], asset_type=args.get("asset_type", "WIKI"))
+            res = await self.gateway.get_document_asset(
+                token,
+                args["doc_id"],
+                asset_type=args.get("asset_type", "WIKI"),
+                chunk_id=args.get("chunk_id"),
+            )
             if "raw_bytes" in res:
                 res["raw_base64"] = base64.b64encode(res.pop("raw_bytes")).decode("ascii")
             return res

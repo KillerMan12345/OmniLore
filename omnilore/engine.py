@@ -2412,6 +2412,7 @@ class OmniLoreEngine:
         code_symbol_filter: Optional[str] = None,
         include_history: bool = False,
         top_k: int = 5,
+        token_budget: Optional[int] = 1500,
     ) -> Dict[str, Any]:
         scope = self.auth.resolve_scope(raw_token)
         # A-6 zero-key degradation + QA P1-2 resilience: with no usable embedding
@@ -2532,9 +2533,13 @@ class OmniLoreEngine:
                 "has_sufficient_evidence": bool,
             },
         )
+        from .context_budget import govern_search_results
+        gov_res = govern_search_results(top_chunks, token_budget=token_budget)
+        governed_top_chunks = gov_res["results"]
+
         return {
             "query": query,
-            "results": top_chunks,
+            "results": governed_top_chunks,
             "synthesized_answer": synth["answer"],
             "citations": synth["citations"],
             "has_sufficient_evidence": synth["has_sufficient_evidence"],
@@ -2550,7 +2555,68 @@ class OmniLoreEngine:
             "degraded_reason": degraded_reason,
             "synthesis_degraded": bool(synth_note),
             "synthesis_note": synth_note,
+            "budget_governance": gov_res["budget_governance"],
         }
+
+    async def get_asset_chunk(
+        self,
+        raw_token: str,
+        chunk_id: str,
+    ) -> Dict[str, Any]:
+        scope = self.auth.resolve_scope(raw_token)
+        async with profiled_transaction(self.db, scope) as conn:
+            chunks = await conn.select_rows("document_chunks", lambda c: c["chunk_id"] == chunk_id)
+            if not chunks:
+                raise PermissionDeniedError("Resource not found or access denied")
+            ch = chunks[0]
+            from .context_budget import estimate_tokens
+            return {
+                "chunk_id": ch["chunk_id"],
+                "doc_id": ch["doc_id"],
+                "space_id": ch["space_id"],
+                "category": ch["category"],
+                "heading_path": ch.get("heading_path"),
+                "page_number": ch.get("page_number"),
+                "chunk_text": ch["chunk_text"],
+                "code_symbols": ch.get("code_symbols", []),
+                "is_current": ch.get("is_current", True),
+                "estimated_tokens": estimate_tokens(ch["chunk_text"]),
+            }
+
+    async def verify_citation(
+        self,
+        raw_token: str,
+        doc_id: str,
+        claim_text: str,
+        verbatim_quote: Optional[str] = None,
+        asset_type: str = "WIKI",
+    ) -> Dict[str, Any]:
+        scope = self.auth.resolve_scope(raw_token)
+        async with profiled_transaction(self.db, scope) as conn:
+            docs = await conn.select_rows("documents", lambda d: d["doc_id"] == doc_id)
+            if not docs:
+                raise PermissionDeniedError("Resource not found or access denied")
+            doc = docs[0]
+            if asset_type == "WIKI":
+                source_content = self.storage.read_wiki_by_record(doc["space_id"], doc["wiki_rel_path"])
+            else:
+                doc_assets = await conn.select_rows("document_assets", lambda da: da["doc_id"] == doc_id)
+                if not doc_assets:
+                    raise PermissionDeniedError("Raw asset not found or access denied")
+                asset_id = doc_assets[0]["asset_id"]
+                asset_rec = self.db._state["assets"][asset_id]
+                raw_bytes = self.storage.read_cas_asset(
+                    asset_rec["storage_rel_path"],
+                    asset_rec["sha256_hash"],
+                )
+                source_content = raw_bytes.decode("utf-8", errors="replace")
+
+        from .citation import verify_citation_content
+        eval_res = verify_citation_content(claim_text, source_content, verbatim_quote=verbatim_quote)
+        eval_res["doc_id"] = doc_id
+        eval_res["asset_type"] = asset_type
+        eval_res["version_label"] = doc.get("version_label")
+        return eval_res
 
     # =========================================================================
     # 9. Obsidian Markdown Sync & Governance Dashboard (Section 10.1 & 10.2)
@@ -2943,6 +3009,7 @@ class OmniLoreMCPGateway:
         categories: Optional[List[str]] = None,
         code_symbol: Optional[str] = None,
         include_history: bool = False,
+        token_budget: Optional[int] = 1500,
     ) -> Dict[str, Any]:
         return await self.engine.search_knowledge(
             raw_token,
@@ -2951,6 +3018,30 @@ class OmniLoreMCPGateway:
             category_filter=set(categories) if categories else None,
             code_symbol_filter=code_symbol,
             include_history=include_history,
+            token_budget=token_budget,
+        )
+
+    async def get_asset_chunk(
+        self,
+        raw_token: str,
+        chunk_id: str,
+    ) -> Dict[str, Any]:
+        return await self.engine.get_asset_chunk(raw_token, chunk_id)
+
+    async def verify_citation(
+        self,
+        raw_token: str,
+        doc_id: str,
+        claim_text: str,
+        verbatim_quote: Optional[str] = None,
+        asset_type: str = "WIKI",
+    ) -> Dict[str, Any]:
+        return await self.engine.verify_citation(
+            raw_token,
+            doc_id=doc_id,
+            claim_text=claim_text,
+            verbatim_quote=verbatim_quote,
+            asset_type=asset_type,
         )
 
     async def get_document_asset(
@@ -2958,9 +3049,13 @@ class OmniLoreMCPGateway:
         raw_token: str,
         doc_id: str,
         asset_type: str = "WIKI",
+        chunk_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if asset_type == "CHUNK":
+            target_chunk = chunk_id or doc_id
+            return await self.get_asset_chunk(raw_token, target_chunk)
         if asset_type not in ("WIKI", "RAW_ASSET"):
-            raise OmniLoreError("INVALID_ASSET_TYPE", "asset_type must be 'WIKI' or 'RAW_ASSET'")
+            raise OmniLoreError("INVALID_ASSET_TYPE", "asset_type must be 'WIKI', 'RAW_ASSET' or 'CHUNK'")
         if "/" in doc_id or "\\" in doc_id or ".." in doc_id:
             raise PermissionDeniedError("Client bare paths are prohibited in get_document_asset")
 

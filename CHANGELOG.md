@@ -41,6 +41,11 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   关键词分词采用与本地确定性嵌入一致的 **CJK 二元组**策略，保证中文查询可命中。
 - **降级正交上报**：`degraded_reason` 只描述**检索**是否降级；答案合成的降级独立为
   `synthesis_degraded` 与 `synthesis_note`，两者不混在一起。
+- **Token 预算治理与按需折叠（理念一）**：`omnilore/context_budget.py` 提供轻量无外部依赖的估算与配额均分，支持 `search_knowledge(token_budget=...)`。超额长代码块按需折叠、保留锚点，下游通过 `get_asset_chunk` / `get_document_asset(asset_type="CHUNK")` 精准二级无损下钻。
+- **防幻觉强制引用校验（理念二）**：`omnilore/citation.py` 提供多语言归一化与滑动窗口比对，穿透 CAS 证据链与 Wiki 页面，输出 `VERIFIED` / `PARTIALLY_VERIFIED` / `UNVERIFIED_OR_MISQUOTED` 三态可审计判定，杜绝 Agent 伪造引用。
+- **MRP 知识编译流与版本因果演化链（理念三）**：`omnilore/evolution_chain.py` 构建版本因果演化 DAG，挂载 `reverts_version_key` 与 `supersedes_version_keys`，合并前生成 `unified_diff` 并给出章节影响范围与风险评级（`LOW`/`MED`/`HIGH`）。
+- **MCP 工具分层治理（理念四）**：`omnilore/mcp_stdio_server.py` 将 7 个工具明确标记为 `query`（只读消费层）与 `governance`（写/审计治理层），`tools/list` 原生支持 `tier` 可选过滤，完全向后兼容。
+- **最小存储后端契约抽象（理念五）**：`omnilore/storage_contract.py` 统一定义 `StorageBackend` 运行时 Protocol 契约与 `StorageCapabilities` 能力自省，预留轻量化解耦插槽。
 - **`sql/002_omnilore_bootstrap_seed.sql`**：PostgreSQL 模式下的最小 seed。
 
 **诚实标注与贡献入口**
@@ -217,18 +222,20 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
     **但边界不变**：它只证明 `sql/001` 的 SQL 策略在真实 PG 上生效，
     **不等于业务运行时已接入 PostgreSQL / 数据已持久化**。
     `ARM64 架构验证` 当时因只有 1 次绿灯维持 `Implemented`；此后累计 3 次绿灯，已按同一门槛升为 `Tested-real`。
-- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 152 个测试 +
+- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 168 个测试 +
   ruff + DCO 校验 + 静态红线守卫，全程不使用任何 Secret；**另有一个独立的 `integration-rls`
   job 需要真实 PostgreSQL service container**（见上），它是全仓唯一需要外部服务的门禁，
   同样不使用任何 Secret。
-- **测试套件**：152 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、37 项首发专项、
+- **测试套件**：168 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、37 项首发专项、
   61 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
   证据包导出与篡改测试 / 21 条 RLS 策略注释守卫 / 两条真实 PG 例外的证据性质守卫）、
   30 项 W6 专项
   （provider 抽象 / 四个环境变量真生效 / 维度守卫 / 降级回归 / 统一数据目录 / arm64 配置）、
   5 项 PG 运行时接线专项（`test_pg_runtime_wiring.py`：内存引擎默认 / 无 `DATABASE_URL`
-  时不接 PG / 拒绝超用户与 `BYPASSRLS` 连接角色 —— **离线 mock，不连真实 PG**）。
-  140 项业务用例跑在 `RLSDatabaseEngine` **内存仿真引擎**上（另有 2 条守卫只做静态文本
+  时不接 PG / 拒绝超用户与 `BYPASSRLS` 连接角色 —— **离线 mock，不连真实 PG**）、
+  16 项架构理念落地专项（`test_context_budget.py` 5 项、`test_citation_grounding.py` 4 项、
+  `test_evolution_chain.py` 3 项、`test_tiered_mcp_tooling.py` 2 项、`test_storage_contract.py` 2 项）。
+  156 项业务用例跑在 `RLSDatabaseEngine` **内存仿真引擎**上（另有 2 条守卫只做静态文本
   判定、不碰引擎），与 PostgreSQL RLS 同构但
   **不是真实 PostgreSQL**；新增的 5 项接线用例同样离线（mock），不产生真实 PG 证据。
 - **`docs/HANDOVER.md`（交接文档）**：面向接手本项目的下一个 agent 或新贡献者，

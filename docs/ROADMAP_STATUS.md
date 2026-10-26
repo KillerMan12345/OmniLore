@@ -10,7 +10,7 @@
 
 | 里程碑 | 目标 | 当前状态 | 公开证据与边界 |
 |---|---|---|---|
-| **S1：合规与首启解锁** | 合规文件、零密钥引导、跨平台文本正确性、离线门禁 | **已完成** | 合规文件、`bootstrap` / `demo`、Windows LF 门禁、离线测试矩阵配置均已入库；当前全量套件 152 项通过 |
+| **S1：合规与首启解锁** | 合规文件、零密钥引导、跨平台文本正确性、离线门禁 | **已完成** | 合规文件、`bootstrap` / `demo`、Windows LF 门禁、离线测试矩阵配置均已入库；当前全量套件 168 项通过 |
 | **S2：诚实标注与社区入口** | 四态能力矩阵、威胁模型、笔记主权开关、贡献入口 | **已完成** | README、能力矩阵与 CHANGELOG 的状态统计一致；六套 Issue 模板与六条贡献路径已提供 |
 | **S3：真实 RLS 证据** | 真实 PostgreSQL 探针与自动化持续取证 | **持续取证已跑通；数据面迁移仍未做** | **① 策略探针已由 CI 持续验证**：`integration-rls` job 已在 GitHub Actions 上真实运行并**连续 2 次绿灯**（2026-10-26，Run #1 `8d0ecc3` / Run #2 `5d513fe`，3 条探针均 PASS）—— 它只证明 `sql/001` 的 SQL 策略在真实 PG 上生效，**不等于业务运行时已接入 PG**；**② 应用角色走运行时连接层的探针仍是人工一次性、非 CI**（2026-10-25 / 2026-10-26 两套环境，验证脚本未接进 CI）；安全连接层已落地，但业务数据层仍**尚未**接入 PostgreSQL 仓储层（详见第 5 节） |
 | **S4：最小可传播演示** | 零密钥入库、检索、证据包导出与传播素材 | **技术链路完成，物料待补** | `bootstrap` → `demo` → `audit-bundle` 可跨进程运行并校验篡改；README hero GIF 仍需维护者录制与剪辑 |
@@ -63,7 +63,7 @@
 |---|---|---|
 | **真实 PostgreSQL 集成 CI** | `integration-rls` job、镜像、健康检查、空库守卫与退出码语义均已配置，**并已于 2026-10-26 真实运行、连续 2 次绿灯** | 该 job 只跑**独立 SQL 探针**，**不覆盖 CLI / MCP 业务运行时接线**；它不构成业务数据已走 PostgreSQL 的证据（见第 5 节） |
 | **arm64 CI** | `ubuntu-24.04-arm` job 跑全量离线测试、ruff 与零密钥冒烟，已 **3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续） | 已达「连续 ≥2 次绿灯」门槛，标 `Tested-real`；只覆盖离线套件，不覆盖真实 PG 业务数据面 |
-| **windows-latest 离线矩阵（py3.11 / py3.12）** | 与 `ubuntu-latest` 跑同一套 152 个离线用例 + `ruff` | **已通过（Run #5 `effbb02`，两个 job 均绿，至此 8 个 check 全绿）**：先后修掉两个互不相关的确定性失败 —— ① en-US runner 的 cp1252 代码页（stdout 走管道时子进程打印中文抛 `UnicodeEncodeError`）；② MCP 握手冒烟步骤用了 `tee /dev/stderr`，该路径在 Windows 的 Git Bash 上不保证存在，配合 `-o pipefail` 直接判负（且该步带 `if: py3.12`，把 py3.11 的「跳过」伪装成了绿）。两者均已修复并各配守卫（代码页 2 条、不可移植 shell 写法 1 条） |
+| **windows-latest 离线矩阵（py3.11 / py3.12）** | 与 `ubuntu-latest` 跑同一套 168 个离线用例 + `ruff` | **已通过（Run #5 `effbb02`，两个 job 均绿，至此 8 个 check 全绿）**：先后修掉两个互不相关的确定性失败 —— ① en-US runner 的 cp1252 代码页（stdout 走管道时子进程打印中文抛 `UnicodeEncodeError`）；② MCP 握手冒烟步骤用了 `tee /dev/stderr`，该路径在 Windows 的 Git Bash 上不保证存在，配合 `-o pipefail` 直接判负（且该步带 `if: py3.12`，把 py3.11 的「跳过」伪装成了绿）。两者均已修复并各配守卫（代码页 2 条、不可移植 shell 写法 1 条） |
 | **PostgreSQL 应用运行时** | 安全连接层已落地：`omnilore/pg_runtime.py` 会读 `DATABASE_URL`，强制连接角色非超用户 / 无 `BYPASSRLS` / 是策略角色成员（否则拒绝启动），事务内 `SET LOCAL ROLE` + 注入 RLS GUC；RLS 生效已在真实 PG 16.15 上以应用角色人工验证一次 | **业务数据层仍未接入**：CLI / MCP 尚未根据 `DATABASE_URL` 实例化 `AsyncpgRepository`，业务读写仍走内存 `RLSDatabaseEngine`，容器内业务状态仍随进程结束而清空，**不能宣称持久化或多人共享**。数据面迁移（逐业务方法重写为 SQL）是独立的 4–6 人日工程，见第 5 节 |
 | **macOS** | 代码以 Python 3.11+ 和跨平台路径规则为兼容目标 | 当前 CI 只有 Ubuntu / Windows，没有 macOS job，不宣称 macOS 已实跑 |
 | **PDF 入库** | `pdfplumber` → `pypdf` 回退实现已存在 | 当前自动化套件没有构造或入库真实 PDF，因此“多格式入库”整体状态为 `Implemented`，不是 `Tested-real` |
@@ -190,14 +190,14 @@ PostgreSQL 中**超级用户与 `BYPASSRLS` 角色默认绕过行级安全策略
 
 | 门禁 | 状态 | 判定 |
 |---|---|---|
-| **G0：首启可达** | **已通过** | 当前仓库全量测试 152 项通过、0 failure、0 error、0 skip；ruff 通过；零密钥 `bootstrap` → `demo` → `audit-bundle` 跨进程链路退出码为 0 |
+| **G0：首启可达** | **已通过** | 当前仓库全量测试 168 项通过、0 failure、0 error、0 skip；ruff 通过；零密钥 `bootstrap` → `demo` → `audit-bundle` 跨进程链路退出码为 0 |
 | **G2：打 tag 前复核** | **待通过** | 必须再次核对 README / 能力矩阵 / CHANGELOG 的诚实口径，并由维护者手动执行 demo 与证据包冒烟；**从未真实运行过的 CI job 不能写成已验证**（`integration-rls` 与 arm64 现已真实运行，可按实际绿灯次数陈述）。`windows-latest` 的失败根因已定位并修复，但**改动尚未推送、CI 尚未复跑**，因此仍不得宣称 Windows CI 已绿 —— 必须等推送后两个 job 真实转绿 |
 | **G3：公开首发** | **待通过** | 只有第 0 波封闭验证达到方向性门槛且发布物料就绪后才可公开首发；当前没有真人样本，不能以仓库测试代替用户验证 |
 
 ## 7. 诚实口径
 
 - 当前能力矩阵共 **32 条**：`Implemented` 9 条、`Tested-real` 10 条、`Simulated` 12 条、`Planned` 1 条。
-- 152 项离线测试主要证明内存仿真路径、真实文件系统、真实子进程和纯函数逻辑；其中新增的 5 项 PG 运行时接线用例也是离线 mock。它们不等于真实 PostgreSQL 应用链路证据。
+- 168 项离线测试主要证明内存仿真路径、真实文件系统、真实子进程和纯函数逻辑；其中新增的 5 项 PG 运行时接线用例也是离线 mock。它们不等于真实 PostgreSQL 应用链路证据。
 - 真实 PostgreSQL 的现有证据是**两条三探针记录，性质不同**：① 2026-10-24 策略挂载、未授权跨空间不可见、授权后可见 —— **已由 CI 的 `integration-rls` job 持续验证**（自 2026-10-26 起连续 2 次绿灯）；② 2026-10-25 / 2026-10-26 以应用角色走运行时连接层的未授权 0 行 / 授权后可见 / 连接角色非超用户无 `BYPASSRLS` —— **仍是人工一次性、非 CI**。两者都不覆盖 profile、写侧策略、组织树继承、撤销链路，也都**不覆盖业务读写到 PG 的数据面**；① 有 CI 绿灯也**不等于**业务运行时已接入 PostgreSQL。
 - 当前**仍然**没有任何证据表明业务请求曾经经过 PostgreSQL：安全连接层只做连接与自检，业务数据仍走内存引擎。若未来以超级用户身份接通，`PgRuntime` 会直接拒绝启动（fails closed），因为那比未接通更危险（见第 5 节）。
 - `integration-rls` 已于 2026-10-26 **连续 2 次真实绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`），arm64 **首次绿灯**（Run #2），二者都已不再只是“配置已就位”。但绿灯只覆盖它们各自跑的那部分：前者只跑独立 SQL 探针，后者只跑离线套件；**都不覆盖业务数据面**。`windows-latest` 的 py3.11 / py3.12 两个 job 已在 Run #5（`effbb02`）转绿，至此 8 个 check 全部通过（详见第 3 节的 `windows-latest` 行）。

@@ -7,7 +7,7 @@ name: CI
 #    它同样**不使用任何 Secret**，但语义上是「失败即红」：探针的 exit 2（未验证）
 #    也必须让 job 失败 —— 否则就是假绿，比不跑更糟。
 #
-# 目标：G0 门禁 —— 152 个离线测试 + lint + DCO + 真实 PG RLS 探针，
+# 目标：G0 门禁 —— 168 个离线测试 + lint + DCO + 真实 PG RLS 探针，
 # 并在矩阵中包含 windows-latest 防 CRLF 回归。
 
 on:
@@ -63,7 +63,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: "Run the full offline test suite (152 tests: 19 acceptance + 37 W0 launch + 61 W2/W3 roadmap + 30 W6 provider/platform safety guards + 5 PG runtime wiring)"
+      - name: "Run the full offline test suite (168 tests: 19 acceptance + 37 W0 launch + 61 W2/W3 roadmap + 30 W6 provider/platform safety guards + 5 PG runtime wiring + 16 core paradigms)"
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
       # 只在失败时执行：把「平台环境差异」这一类信息一次性打进日志。
@@ -268,7 +268,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
 
-      - name: "ARM64: full offline test suite (same 152 tests as the x86 matrix)"
+      - name: "ARM64: full offline test suite (same 168 tests as the x86 matrix)"
         run: python -m unittest discover -s tests -p "test_*.py" -v
 
       - name: "ARM64: ruff check"
