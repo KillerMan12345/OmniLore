@@ -49,7 +49,7 @@
 - 向量来源支持 DashScope、OpenAI 兼容端点与显式关闭；OpenAI / Ollama 的真实端点尚未验证，因此状态仍为 `Implemented`。
 - 模型名与向量维度环境变量已真正进入请求配置；维度不一致会响亮失败，不截断也不补零。
 - 数据目录解析已经统一，CLI、MCP、运行时索引、引导状态与证据包基于同一个根目录。
-- arm64 CI job 已配置，并于 2026-10-26 在 CI 上**首次绿灯**（Run #2，commit `5d513fe`）；但只有 1 次绿灯、样本尚少，仍标 `Implemented`，**不宣称 arm64 已验证**。
+- arm64 CI job 已配置，并已 **3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。**边界**：绿灯只覆盖离线套件 + `ruff` + 零密钥冒烟，**不覆盖真实 PG 业务数据面**。
 
 ### 社区入口
 
@@ -62,8 +62,8 @@
 | 项目 | 已完成到哪里 | 仍缺什么 |
 |---|---|---|
 | **真实 PostgreSQL 集成 CI** | `integration-rls` job、镜像、健康检查、空库守卫与退出码语义均已配置，**并已于 2026-10-26 真实运行、连续 2 次绿灯** | 该 job 只跑**独立 SQL 探针**，**不覆盖 CLI / MCP 业务运行时接线**；它不构成业务数据已走 PostgreSQL 的证据（见第 5 节） |
-| **arm64 CI** | `ubuntu-24.04-arm` job 已配置全量离线测试、ruff 与零密钥冒烟，**并已于 2026-10-26 首次绿灯**（Run #2，commit `5d513fe`） | 只有 1 次绿灯、**样本尚少**，维持 `Implemented`；本项目对 CI 类条目升 `Tested-real` 的门槛是**连续 ≥2 次绿灯** |
-| **windows-latest 离线矩阵（py3.11 / py3.12）** | 与 `ubuntu-latest` 跑同一套 152 个离线用例 + `ruff` | **根因已定位并修复，CI 复验未做**：Run #2（`5d513fe`）两个 job 红的原因是 **en-US runner 的 cp1252 代码页** —— stdout 被管道接管时 CPython 用 locale 编码，子进程打印中文即 `UnicodeEncodeError`（`PYTHONIOENCODING=cp1252` 可在本机复现，修复前 8 failures + 1 error）。已修：产品入口 `pin_utf8_std_streams()`、CI 开 `PYTHONUTF8=1`、测试钉住子进程 UTF-8，并新增 2 条代码页守卫（变异 2/2 变红）。**但尚未推送、尚未重新跑 CI**，所以在转绿之前，Windows 仍只能写「本地已验证」，**不得写成「CI 已验证」** |
+| **arm64 CI** | `ubuntu-24.04-arm` job 跑全量离线测试、ruff 与零密钥冒烟，已 **3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续） | 已达「连续 ≥2 次绿灯」门槛，标 `Tested-real`；只覆盖离线套件，不覆盖真实 PG 业务数据面 |
+| **windows-latest 离线矩阵（py3.11 / py3.12）** | 与 `ubuntu-latest` 跑同一套 152 个离线用例 + `ruff` | **已通过（Run #5 `effbb02`，两个 job 均绿，至此 8 个 check 全绿）**：先后修掉两个互不相关的确定性失败 —— ① en-US runner 的 cp1252 代码页（stdout 走管道时子进程打印中文抛 `UnicodeEncodeError`）；② MCP 握手冒烟步骤用了 `tee /dev/stderr`，该路径在 Windows 的 Git Bash 上不保证存在，配合 `-o pipefail` 直接判负（且该步带 `if: py3.12`，把 py3.11 的「跳过」伪装成了绿）。两者均已修复并各配守卫（代码页 2 条、不可移植 shell 写法 1 条） |
 | **PostgreSQL 应用运行时** | 安全连接层已落地：`omnilore/pg_runtime.py` 会读 `DATABASE_URL`，强制连接角色非超用户 / 无 `BYPASSRLS` / 是策略角色成员（否则拒绝启动），事务内 `SET LOCAL ROLE` + 注入 RLS GUC；RLS 生效已在真实 PG 16.15 上以应用角色人工验证一次 | **业务数据层仍未接入**：CLI / MCP 尚未根据 `DATABASE_URL` 实例化 `AsyncpgRepository`，业务读写仍走内存 `RLSDatabaseEngine`，容器内业务状态仍随进程结束而清空，**不能宣称持久化或多人共享**。数据面迁移（逐业务方法重写为 SQL）是独立的 4–6 人日工程，见第 5 节 |
 | **macOS** | 代码以 Python 3.11+ 和跨平台路径规则为兼容目标 | 当前 CI 只有 Ubuntu / Windows，没有 macOS job，不宣称 macOS 已实跑 |
 | **PDF 入库** | `pdfplumber` → `pypdf` 回退实现已存在 | 当前自动化套件没有构造或入库真实 PDF，因此“多格式入库”整体状态为 `Implemented`，不是 `Tested-real` |
@@ -75,13 +75,13 @@
 
 ### 需要维护者完成
 
-- **（已完成）** 推送并观察 `integration-rls` 与 arm64 job 的首次真实运行：两者均已在 Run #2
-  （`5d513fe`）转绿 —— `integration-rls` 连续 2 次绿灯、arm64 首次绿灯。
-- **（待复验）** `windows-latest` 上 py3.11 / py3.12 两个 job 的失败已定位并修复（根因=en-US
-  runner 的 **cp1252 代码页**：stdout 走管道时子进程打印中文抛 `UnicodeEncodeError`），
-  修复含产品入口 `pin_utf8_std_streams()`、CI 的 `PYTHONUTF8=1`、测试侧子进程 UTF-8 固定，
-  以及 2 条守卫（变异 2/2 变红）。**但改动尚未推送、CI 尚未复跑** —— 推送后需确认两个 job
-  转绿，在此之前 Windows 只能写“本地已验证”，不得写成“CI 已验证”。
+- **（已完成）** 推送并观察真实运行：`integration-rls` 与 arm64 均已在 Run #2（`5d513fe`）转绿；
+  arm64 累计 3 次绿灯（#2 / #4 / #5），已达升级门槛。
+- **（已完成）** `windows-latest` 的 py3.11 / py3.12 两个 job 已转绿（Run #5，commit `effbb02`）。
+  根因是两个互不相关的确定性缺陷：① en-US runner 的 **cp1252 代码页**（stdout 走管道时
+  子进程打印中文抛 `UnicodeEncodeError`）；② MCP 握手冒烟步骤的 `tee /dev/stderr` 在
+  Windows 的 Git Bash 上不保证存在（且该步带 `if: py3.12`，使 py3.11 的“跳过”看起来是绿）。
+  两者均已修复并配守卫（代码页 2 条 + 不可移植 shell 写法 1 条）。
 - **（安全连接层部分已完成，剩余项如下）** 完成 PostgreSQL 运行时接线的**数据面迁移**并通过评审：把 `OmniLoreEngine` 的逐业务方法从内存 `RLSDatabaseEngine`（含直接访问 `self.db._state[...]` 的位置）重写为参数化 SQL，并在真实 PG 上用应用角色验证 RLS 不退化（见第 5 节）。安全模型设计（登录角色与最小权限、`SET LOCAL ROLE` 切换、请求上下文注入、fails closed 自检、「RLS 确实生效」的验证方式）**已完成并落地**，`omnilore_migrator` 无法降权的问题已用「应用只用 `omnilore_app` + `PgRuntime` 强制拒绝超用户」两重保证绕开。
 - 录制基于真实 `bootstrap` → `demo` → `audit-bundle` 输出的 README hero GIF。
 - 招募并执行 10–20 名真人的第 0 波封闭验证；主持人不应替参与者完成步骤。
@@ -196,11 +196,11 @@ PostgreSQL 中**超级用户与 `BYPASSRLS` 角色默认绕过行级安全策略
 
 ## 7. 诚实口径
 
-- 当前能力矩阵共 **32 条**：`Implemented` 10 条、`Tested-real` 9 条、`Simulated` 12 条、`Planned` 1 条。
+- 当前能力矩阵共 **32 条**：`Implemented` 9 条、`Tested-real` 10 条、`Simulated` 12 条、`Planned` 1 条。
 - 152 项离线测试主要证明内存仿真路径、真实文件系统、真实子进程和纯函数逻辑；其中新增的 5 项 PG 运行时接线用例也是离线 mock。它们不等于真实 PostgreSQL 应用链路证据。
 - 真实 PostgreSQL 的现有证据是**两条三探针记录，性质不同**：① 2026-10-24 策略挂载、未授权跨空间不可见、授权后可见 —— **已由 CI 的 `integration-rls` job 持续验证**（自 2026-10-26 起连续 2 次绿灯）；② 2026-10-25 / 2026-10-26 以应用角色走运行时连接层的未授权 0 行 / 授权后可见 / 连接角色非超用户无 `BYPASSRLS` —— **仍是人工一次性、非 CI**。两者都不覆盖 profile、写侧策略、组织树继承、撤销链路，也都**不覆盖业务读写到 PG 的数据面**；① 有 CI 绿灯也**不等于**业务运行时已接入 PostgreSQL。
 - 当前**仍然**没有任何证据表明业务请求曾经经过 PostgreSQL：安全连接层只做连接与自检，业务数据仍走内存引擎。若未来以超级用户身份接通，`PgRuntime` 会直接拒绝启动（fails closed），因为那比未接通更危险（见第 5 节）。
-- `integration-rls` 已于 2026-10-26 **连续 2 次真实绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`），arm64 **首次绿灯**（Run #2），二者都已不再只是“配置已就位”。但绿灯只覆盖它们各自跑的那部分：前者只跑独立 SQL 探针，后者只跑离线套件；**都不覆盖业务数据面**。`windows-latest` 的 py3.11 / py3.12 两个 job 在 Run #2 仍红；其根因（en-US runner 的 cp1252 代码页）已定位并修复，**但尚未推送复跑**，故当前仍按「未通过」计（详见第 3 节的 `windows-latest` 行）。
+- `integration-rls` 已于 2026-10-26 **连续 2 次真实绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`），arm64 **首次绿灯**（Run #2），二者都已不再只是“配置已就位”。但绿灯只覆盖它们各自跑的那部分：前者只跑独立 SQL 探针，后者只跑离线套件；**都不覆盖业务数据面**。`windows-latest` 的 py3.11 / py3.12 两个 job 已在 Run #5（`effbb02`）转绿，至此 8 个 check 全部通过（详见第 3 节的 `windows-latest` 行）。
 - 第 0 波封闭验证尚未开始，样本量为 0。即使未来只完成 10–20 人验证，也只能作为 Go/No-Go 的方向性依据，不能据此发布具有统计置信度的成功率或 TTFV 宣称。
 - PDF、真实 n8n、真实 OpenAI / Ollama 与 macOS 均缺少对应的真实运行证据；各自状态不得越级。
 

@@ -361,7 +361,7 @@ OmniLore 支持 **x86_64 与 arm64** 两种 CPU 架构，验证方式不同，�
 | 架构 | 状态 | 验证方式 |
 |---|---|---|
 | `x86_64`（Linux / Windows；macOS Intel 为兼容目标） | `Tested-real`（Linux / Windows） | CI 离线矩阵为 `ubuntu-latest` × `windows-latest` × Python 3.11/3.12；当前没有 macOS job，**不得把 macOS 写成已验证** |
-| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Implemented` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 152 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），但**只有 1 次绿灯、样本尚少**，故仍标 `Implemented`；本项目对「CI 类条目升 `Tested-real`」的门槛是**连续 ≥2 次绿灯**，达到后再评估升级 |
+| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Tested-real` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 152 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。边界：仅覆盖离线套件 + `ruff` + 零密钥冒烟，不覆盖真实 PG 业务数据面 |
 
 > 为什么 arm64 单独一个 job 而不是并进矩阵：`integration-rls` 刻意留在 x86（真实 PostgreSQL
 > service container）。在 arm64 上同时引入「新架构 + 新服务容器」两个变量，一旦红了分不清是谁的锅。
@@ -408,7 +408,7 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 > | `Planned` | 尚未实现，或仅有模板、未经过自动化验证 |
 >
 > **当前统计（三处一致，由测试守护）：**
-> `Implemented` 10 条 ｜ `Tested-real` 9 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
+> `Implemented` 9 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
 >
 > **测试跑在什么上面（重要）**：本项目的绝大多数业务用例都跑在
 > `omnilore.engine.RLSDatabaseEngine`（**内存仿真引擎**）上 —— 它与 PostgreSQL RLS
@@ -474,7 +474,7 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 - **[Tested-real]** **跨平台 LF 规范化**：全部文本读写统一 UTF-8 + LF；`windows-latest` 上跑同一套离线用例 + LF 守卫。**边界**：`windows-latest` 的两个 job 自 Run #2 起一直红（根因是 en-US runner 的 cp1252 代码页，已修复但**尚未推送复验**），因此这条 Windows 侧回归门禁**当前尚未真正生效**；Windows 侧证据来自开发者本机（真实 NTFS）跑完整套件。
 
 - **[Implemented]** **模型 provider 抽象（R-04b）**：向量来源不再绑死阿里云 —— `OMNILORE_EMBEDDING_PROVIDER` 可选 `dashscope`（默认，行为与之前完全一致）/ `openai`（**任意 OpenAI 兼容端点**：OpenAI、Azure、**Ollama**、vLLM、LM Studio、硅基流动）/ `none`（显式只用 BM25）；`OMNILORE_EMBEDDING_BASE_URL` 指向自建端点，本地回环地址**不需要 API Key**。四个曾经的「预留、不读取」变量（`OMNILORE_PRIMARY_MODEL` / `OMNILORE_ESCALATED_MODEL` / `OMNILORE_EMBEDDING_MODEL` / `OMNILORE_EMBEDDING_DIM`）**现已真正生效**，且 `omnilore bootstrap` 会回显实际生效的 provider/模型/维度。维度配错会**响亮报错**而不是截断补零。**证据边界**：用例用 `monkeypatch` 的假 HTTP 端点验证请求体与维度，**没有对真实 OpenAI / Ollama 端点做过验证**，故标 `Implemented` 而非 `Tested-real`。
-- **[Implemented]** **ARM64 架构验证（R-11b）**：CI 新增独立 `arm64` job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner），跑**同一套离线测试** + `ruff` + bootstrap/demo 冒烟；`integration-rls` 刻意留在 x86（不在新架构上再叠服务容器这个变量）。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），但仅 1 次、**样本尚少**，故仍标 `Implemented` —— 本项目对 CI 类条目的升级门槛是**连续 ≥2 次绿灯**，达到后再评估。
+- **[Tested-real]** **ARM64 架构验证（R-11b）**：CI 新增独立 `arm64` job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner），跑**同一套离线测试** + `ruff` + bootstrap/demo 冒烟；`integration-rls` 刻意留在 x86（不在新架构上再叠服务容器这个变量）。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。
 - **[Implemented]** **统一数据目录解析（R-11b）**：数据目录只有一个解析入口 `omnilore.pathutil.resolve_data_dir`（CLI / MCP 服务端 / 证据包 / 运行时索引全部基于同一根），`ops/index`、`ops/bootstrap.json`、`ops/audit_bundles` 都在同一棵树下；由静态守卫禁止任何模块自己 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR`。
 - **[Tested-real]** **真实 PostgreSQL 集成 CI**：`.github/workflows/ci.yml` 新增独立 job `integration-rls` —— 用 `pgvector/pgvector:0.8.0-pg16` 起一个**干净的真实 PostgreSQL 16**，跑 `tools/verify_rls_pg.py` 的三条探针，并把 exit 2（未验证）/ exit 3（结论为否）**逐码**转成 job 失败（不许 `continue-on-error`，不许当跳过）。**它已真实运行并连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`，3 条探针均 PASS），故由 `Implemented` 升 `Tested-real`。**边界**：该 job 只跑**独立 SQL 探针**，**不覆盖 CLI / MCP 业务运行时的接线**，也不意味着业务数据已走 PostgreSQL。
 - **[Tested-real]** **PostgreSQL 安全连接层与 RLS 生效验证**：`omnilore/pg_runtime.py` 的 `PgRuntime` 在设置 `DATABASE_URL` 时由 MCP stdio 服务端建立连接，并强制校验连接角色**非超级用户、无 `BYPASSRLS`、是策略目标角色（`omnilore_gateway` / `omnilore_worker`）成员**，任一不满足即**拒绝启动**（fails closed —— 这类角色会静默绕过 RLS，比连不上更危险）；事务内 `SET LOCAL ROLE` 切到策略角色，并以 `app.*` GUC 注入请求上下文，注入失败即中止事务。证据：2026-10-25 在**真实 PostgreSQL 16.15** 上以应用角色 `omnilore_app` 人工跑通三条探针（未授权空间 0 行 / 授权后 1 行以排除空表假阳性 / 连接角色 `superuser=false, bypassrls=false`），超级用户 `omnilore_migrator` 连接被拒绝启动。**这是人工一次性验证、非 CI**（可复跑：`python tools/verify_rls_app_role.py`，需真实 PG + 应用角色）。**边界（很重要）**：这条连接只做安全接入与启动自检，**业务数据层仍走内存 `RLSDatabaseEngine`，结构化状态不会持久化到 PostgreSQL，也不能据此宣称多人共享**；把它读成「已接通 PostgreSQL 持久化」是误读。

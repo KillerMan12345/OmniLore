@@ -146,19 +146,19 @@ ruff check omnilore tests tools
 | 21 条 RLS 策略注释 | 每条注明保护什么 / 依赖哪维 / 防什么 / 不覆盖什么 | 逻辑冻结摘要 |
 | 真实 PG 集成 CI（R-08b） | `integration-rls` 每次 push 在真实 PG 16 上跑 3 条探针 | **CI 连续 2 次绿灯** |
 | 多 provider（R-04b） | DashScope / OpenAI 兼容 / Ollama / 停用 / 本地兜底 | 默认行为零变化有断言 |
-| 平台收敛（R-11b） | 数据目录唯一来源 + arm64 CI job | arm64 已 1 次绿灯 |
+| 平台收敛（R-11b） | 数据目录唯一来源 + arm64 CI job | arm64 已 3 次绿灯（#4/#5 连续），已达门槛升 `Tested-real` |
 | PostgreSQL 安全连接层 | 强制非超用户连接 + `SET LOCAL ROLE` + GUC fails closed | 真实 PG 人工验证 3 条 |
 
-### 3.2 CI 实况（Run #2，commit `5d513fe`）
+### 3.2 CI 实况（Run #5，commit `effbb02` —— **8 个 check 全部通过**）
 
 | job | 状态 |
 |---|---|
 | test (ubuntu-latest, py3.11 / py3.12) | ✅ |
-| test (**windows-latest, py3.11 / py3.12**) | ❌ **未决 → T1** |
-| arm64 (ubuntu-24.04-arm, py3.12) | ✅ 首次绿灯 |
+| test (**windows-latest, py3.11 / py3.12**) | ✅ 已于 Run #5 转绿（T1 已解决） |
+| arm64 (ubuntu-24.04-arm, py3.12) | ✅ 累计 3 次绿灯（#2 / #4 / #5） |
 | lint | ✅ |
 | DCO sign-off | ✅ |
-| **integration-rls（真实 PostgreSQL 16 + 探针）** | ✅ **3 条探针全部 PASS（exit 0）** |
+| **integration-rls（真实 PostgreSQL 16 + 探针）** | ✅ **3 条探针全部 PASS（exit 0）**，已多次绿灯 |
 
 ### 3.3 真实 PostgreSQL 上的两类证据（**性质不同，别混用**）
 
@@ -247,9 +247,11 @@ ruff check omnilore tests tools
 优先级：**P0** 阻塞发布或违反红线 ｜ **P1** 首发窗口内 ｜ **P2** 首发后 ｜ **Q2** 下季度
 执行者：**A** = agent 可自主完成 ｜ **M** = 维护者（需真人 / 凭证 / 出境）｜ **A+M** = 需配合
 
-### T1（P0，A）修 `windows-latest` 的 2 个 CI job —— **已解决（2026-10-26）**
+### T1（P0，A）修 `windows-latest` 的 2 个 CI job —— **已解决，并已由 CI 确认（Run #5 8/8 全绿）**
 
-> **根因：守卫本身依赖了一个不成立的环境前提，不是产品缺陷。**
+> **这里其实有**两个互不相关**的确定性成因，先后修掉。**
+>
+> **成因一：权限守卫挑了环境相关的锚点（见下）。**
 > 失败只有 2 条、都是权限守卫，断言「收紧后不应残留 `NT AUTHORITY\SYSTEM` /
 > `BUILTIN\Administrators`」。CI 日志里 `icacls` 的实际输出是：
 >
@@ -279,6 +281,26 @@ ruff check omnilore tests tools
 > **变异验证（本次实测）**：整段 no-op → 红；删掉 `/inheritance:r` → 红
 > （`FAILED (failures=2)`）；还原后 `git diff` 为空。
 > **双平台全量**：Windows（Py3.13）151 OK；WSL Ubuntu（Py3.12）151 OK。
+>
+> **成因二：MCP 握手冒烟步骤用了不可移植的 `tee /dev/stderr`（同日发现）。**
+> 成因一修好后 windows 的 py3.12 仍红。用本机凭证拉取该 job 的**完整日志**后确认，
+> 失败点根本不在测试套件（日志里 `Ran 152 tests / OK`、`Ran 61 tests / OK` 都是绿的），
+> 而在冒烟步骤：
+>
+> ```
+> ... | python -m omnilore.mcp_stdio_server | tee /dev/stderr | grep -q '"omnilore-mcp-gateway"'
+> shell: bash -e -o pipefail
+> tee: /dev/stderr: No such file or directory
+> ##[error]Process completed with exit code 1.
+> ```
+>
+> `/dev/stderr` 在 Windows 的 Git Bash 上**不保证存在**（本机是 symlink，runner 上直接报
+> No such file），而 bash step 默认带 `-o pipefail`，tee 一失败整步就非 0。
+> 更阴的是该步带 `if: matrix.python-version == '3.12'` —— py3.11 **跳过**它，
+> 于是「py3.11 绿 / py3.12 红」看起来像 3.12 特有问题，实际是确定性失败被条件分支掩盖。
+> 改为「输入落盘 → 运行 → 打印 stdout → 两条 grep 断言」，并加
+> `test_shell_steps_avoid_nonportable_dev_stderr` 守卫（跳过 YAML 注释行）。
+> Run #5（`effbb02`）起 **8/8 全绿**。
 
 **以下代码页分析与修复是另一个真实缺陷**（cp1252 宿主上子进程打印中文会
 `UnicodeEncodeError`，本机可复现），与本条 CI 红灯的根因**不同**，保留作线索。
@@ -337,7 +359,7 @@ ruff check omnilore tests tools
 
 ### T2（P0，A）~~修正被 CI 证伪的证据口径~~ → **已完成**
 
-`integration-rls`（CI 持续验证，2 次绿灯）、`真实 PostgreSQL 集成 CI`（升 `Tested-real`）、arm64（维持 `Implemented`，仅 1 次绿灯、样本尚少）的口径已在 README / FEATURE_STATUS / ROADMAP_STATUS / THREAT_MODEL / CHANGELOG / ci.yml / `verify_rls_pg.py` 六处同步；守卫断言重写为 5 条并用 **7 条变异测试**验证有效（7/7 变红）。
+`integration-rls`（CI 持续验证，多次绿灯）、`真实 PostgreSQL 集成 CI`（升 `Tested-real`）、arm64（当时维持 `Implemented`，仅 1 次绿灯；**后续累计 3 次绿灯，已升 `Tested-real`**，见日志 37）的口径已在 README / FEATURE_STATUS / ROADMAP_STATUS / THREAT_MODEL / CHANGELOG / ci.yml / `verify_rls_pg.py` 六处同步；守卫断言重写为 5 条并用 **7 条变异测试**验证有效（7/7 变红）。
 
 ### T3（P1，A+M）PostgreSQL 数据面迁移（业务运行时真正接 PG）
 
@@ -494,6 +516,9 @@ G2 门禁要求先手动跑一次 demo 并存档输出。
 | 32 | **提交并推送** | 22 文件（+1303 / −241） | `git diff --check` 报了 9 处行尾空白（`engine.py` 的 `_record_audit(...)` 续行），已清；151 项复跑全绿后提交 `bf619c8` 并推送 |
 | 33 | **CI Run #4 复验 → 修正 T1 的错误结论** | `docs/HANDOVER.md`（T1 段落） | Run #4：ubuntu ×2 / arm64 / lint / DCO / `integration-rls` ✅（RLS 第 3 次绿灯），**`windows-latest` ×2 仍红**。据此把 T1 由「根因已定位并修复」改为「**仍未解决**」，并补上：已排除方向、需维护者提供日志的两个 job 链接、接手排查建议（runner 独有因素：默认 shell / `D:\a\_temp` / `runneradmin` ACL / `core.autocrlf`） |
 | 34 | **T1 根因定位并修复** | `tests/test_w0_launch.py`、`SECURITY.md`、`docs/HANDOVER.md` | 维护者贴来 CI 日志：失败仅 2 条权限守卫，`icacls` 输出里 `NT AUTHORITY\SYSTEM:(F)` / `BUILTIN\Administrators:(F)` **没有 `(I)`** → 是**显式** ACE，而 `/inheritance:r` 依设计只移除继承 ACE。根因是**守卫挑了环境相关的锚点**，不是产品缺陷。守卫改为断言安全不变量（无 `Everyone`/`Users`/`Authenticated Users` + 无 `(I)` + owner 可读写 + 取不到输出时显式失败），两份实现合并为一个助手；`SECURITY.md` 6.1 补写真实边界（保留显式 SYSTEM/Admins，不防本机管理员）。变异 2/2 变红；Windows 151 OK、WSL 151 OK |
+| 35 | **学会自己读 CI 日志** | — | 匿名调用 job 日志端点返回 403（需 admin）。改用本机 Git Credential Manager 已存的凭证：`git credential fill` 取 token → **用 `token` 方案**（`Bearer` 会 401）→ 请求返回 302 到签名 blob URL → **必须不跟随重定向**（否则 Authorization 头被转发到 blob 存储而被拒），先取 `Location` 再匿名下载。脚本全程不打印 token。文档因此补了这一节，接手方不必再求人贴日志 |
+| 36 | 修成因二 + 加守卫 | `.github/workflows/ci.yml`、`tests/test_w2_w3_roadmap.py` | MCP 冒烟步骤去掉 `tee /dev/stderr`，改为落盘 + 两条 grep 断言；新增 `test_shell_steps_avoid_nonportable_dev_stderr`（只扫代码行、跳过注释，并断言该步的两条检查不许被删）。数字 151 → 152 |
+| 37 | **CI 首次全绿 + 按规则升级 arm64** | README / FEATURE_STATUS / ROADMAP_STATUS / CHANGELOG / 守卫 | Run #5（`effbb02`）8/8 全绿。据本项目「CI 类条目升 `Tested-real` 需连续 ≥2 次绿灯」的门槛，arm64（3 次绿灯，其中 #4/#5 连续）由 `Implemented` 升 `Tested-real`，统计 9/10/12/1；同步 windows 的「待复验/未决」→ 已通过；守卫 `test_arm64_row_reports_its_actual_green_run_count` 改为同时防两种偏差（停在旧口径 / 只绿一次就抬高） |
 
 
 **更早的历史**（W0 首发准备、W2–W3、R-05m、R-08b、R-04b、PG 安全连接层等）见 `git log` 与 `CHANGELOG.md`。

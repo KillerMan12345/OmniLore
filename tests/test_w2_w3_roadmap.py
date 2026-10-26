@@ -898,19 +898,33 @@ class TestHonestFeatureStatus(unittest.TestCase):
         )
 
     def test_arm64_row_reports_its_actual_green_run_count(self) -> None:
-        """arm64 必须写明**实际绿灯次数**（已 1 次、样本尚少），不许停留在「待首次绿灯」。"""
+        """arm64 必须写明**实际绿灯次数**，且状态要与该次数一致。
+
+        这条守卫同时防两种相反的偏差：既不许停留在「待首次绿灯」（已被 CI 证伪的旧口径），
+        也不许在只绿过一次时就把状态抬到 `Tested-real`。
+        当前事实：2026-10-26 起 arm64 已 3 次绿灯（Run #2 / #4 / #5，其中 #4/#5 连续），
+        按本项目「CI 类条目升 `Tested-real` 需连续 ≥2 次绿灯」的门槛，已达标。
+        """
         arm_rows = [
             row for row in self._matrix_rows() if row["name"].startswith("ARM64 架构验证")
         ]
         self.assertTrue(arm_rows, "矩阵缺少 ARM64 条目")
-        self.assertEqual(arm_rows[0]["state"], "Implemented", "arm64 只有 1 次绿灯，仍应标 Implemented")
         remark = arm_rows[0].get("remark", "")
         self.assertNotIn(
             "待首次绿灯", remark,
-            "arm64 已于 2026-10-26 首次绿灯，「待首次绿灯」是已被证伪的旧口径",
+            "arm64 已在 CI 上真实绿灯多次，「待首次绿灯」是已被证伪的旧口径",
         )
-        self.assertIn("1 次绿灯", remark, "arm64 备注必须写明实际绿灯次数（1 次）")
-        self.assertIn("样本尚少", remark, "arm64 备注必须写明样本尚少，不得暗示已被充分验证")
+        self.assertIn("3 次绿灯", remark, "arm64 备注必须写明实际绿灯次数")
+        self.assertIn("连续", remark, "arm64 备注必须说明是否满足「连续 ≥2 次」的门槛")
+        self.assertEqual(
+            arm_rows[0]["state"], "Tested-real",
+            "arm64 已达「连续 ≥2 次绿灯」的升级门槛，应标 Tested-real",
+        )
+        # 边界不得因升级而丢：绿灯只覆盖离线套件，不覆盖真实 PG 业务数据面
+        self.assertIn(
+            "不覆盖真实 PostgreSQL 业务数据面", remark,
+            "arm64 备注必须写明证据边界（升级不等于覆盖范围变宽）",
+        )
 
     def test_verify_rls_pg_refuses_a_non_empty_database(self) -> None:
         """非空库必须 fail-closed（exit 2 + 可执行指引），且**绝不**自动清库。"""

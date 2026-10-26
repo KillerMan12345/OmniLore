@@ -37,8 +37,8 @@
    `integration-rls` job 绿灯而自动升级。
 
 **「CI 类条目升 `Tested-real`」的门槛**：**连续 ≥2 次绿灯**（单次绿灯可能是"恰好没红"，
-不构成可复现信号）。`integration-rls` 已达 2 次，故升级；`arm64` job 目前**只有 1 次绿灯**
-（2026-10-26 首次），**样本尚少**，维持 `Implemented`，待累计 ≥2 次连续绿灯后再评估。
+不构成可复现信号）。`integration-rls` 已多次绿灯、`arm64` job 已 3 次绿灯（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`），
+其中 #4/#5 为连续两次 —— **二者均已达门槛，故均为 `Tested-real`**。
 
 其余依赖真实 PostgreSQL 的条目（四维交集 / Profile 隔离 / 撤销失效 / 组织树继承等）
 一律维持 `Simulated` —— 探针没有覆盖它们，不许顺手抬高。
@@ -137,14 +137,14 @@ exit 2/3 都会让 job 变红），**并已于 2026-10-26 连续 2 次真实绿�
 | 跨平台 LF 规范化 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-lf` | `windows-latest` 上跑同一套离线用例 + LF 守卫。**边界**：该 job 自 Run #2 起一直红（根因=en-US runner 的 cp1252 代码页，已修但**未推送复验**），Windows 侧回归门禁**当前尚未真正生效**；Windows 证据来自开发者本机真实 NTFS 全量运行 |
 | opt-in 匿名遥测 | `Planned` | 核心能力 / 尚未实现 | — | 决策已接受，实现排期 Q2 |
 | 模型 provider 抽象（R-04b） | `Implemented` | 核心能力 / 其他宣称 | `make verify-provider` | 向量来源可替换：`OMNILORE_EMBEDDING_PROVIDER` = `dashscope`（默认，行为与抽象前**逐字一致**）/ `openai`（任意 OpenAI 兼容端点：OpenAI / Azure / **Ollama** / vLLM / LM Studio）/ `none`；`OMNILORE_EMBEDDING_BASE_URL` + `OMNILORE_EMBEDDING_API_KEY` 指向自建端点（本地回环地址免 key）。四个曾经的「预留、不读取」变量（`OMNILORE_PRIMARY_MODEL` / `_ESCALATED_MODEL` / `_EMBEDDING_MODEL` / `_EMBEDDING_DIM`）**现已生效**，由 `ModelAdapterConfig.__post_init__` 读取，并有测试断言它们进入**真实请求体**。**证据边界**：用例用 `monkeypatch` 的假 HTTP 端点验证请求体/维度/降级，**没有对真实 OpenAI / Ollama 端点发过请求**，故不标 `Tested-real` |
-| ARM64 架构验证（R-11b） | `Implemented` | 核心能力 / 其他宣称 | —（CI `arm64` job） | CI 新增独立 `arm64` job（`ubuntu-24.04-arm`）跑同一套离线用例 + `ruff` + 冒烟；`integration-rls` 刻意留在 x86。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），**但只有 1 次绿灯、样本尚少**，故仍标 `Implemented` —— 本项目对 CI 类条目升 `Tested-real` 的门槛是**连续 ≥2 次绿灯**，累计达标后再评估升级 |
+| ARM64 架构验证（R-11b） | `Tested-real` | 核心能力 / 其他宣称 | —（CI `arm64` job） | CI 新增独立 `arm64` job（`ubuntu-24.04-arm`）跑同一套离线用例 + `ruff` + 冒烟；`integration-rls` 刻意留在 x86。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。**边界**：绿灯只覆盖**离线套件 + `ruff` + 零密钥冒烟**，**不覆盖真实 PostgreSQL 业务数据面** |
 | 统一数据目录解析（R-11b） | `Implemented` | 核心能力 / 其他宣称 | `make verify` | 只有一个解析入口 `omnilore.pathutil.resolve_data_dir`；`ops/index` / `ops/bootstrap.json` / `ops/audit_bundles` 同根。静态守卫（`TestUnifiedDataDir`）禁止任何模块自己调 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR` |
 | n8n 工作流（3 条） | `Implemented` | 核心能力 / 其他边界明确的能力 | `make verify` | `test_09_n8n_workflows_and_internal_worker_gateway` 自动验证三份 JSON 的结构、无硬编码凭据，以及内部 Worker 网关的入库 / 恢复 / lint / 备份；**尚未在真实 n8n 实例导入、启动和运行**，故不标 `Tested-real` |
 | 真实 PostgreSQL 集成 CI | `Tested-real` | 核心能力 / 其他宣称 | `make verify-rls-pg` | 已接入 Actions 的 `integration-rls` job（`pgvector/pgvector:0.8.0-pg16` service container + `pg_isready -U -d` 健康检查 + 零 Secret；exit 2「未验证」/ exit 3「结论为否」**逐码**转成 job 失败，无 `continue-on-error`）。**它已真实运行并连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`，3 条探针均 PASS），达到「连续 ≥2 次绿灯」的门槛，故由 `Implemented` 升 `Tested-real`。**边界**：该 job 只跑**独立 SQL 探针**（`tools/verify_rls_pg.py`），**不覆盖 CLI / MCP 业务运行时的接线**，也**不证明**业务数据已走 PostgreSQL |
 | PostgreSQL 安全连接层与 RLS 生效验证 | `Tested-real` | 核心能力 / 其他宣称 | `python tools/verify_rls_app_role.py` | `omnilore/pg_runtime.py` 的 `PgRuntime`：设置 `DATABASE_URL` 时由 MCP stdio 服务端建立连接，强制连接角色**非超级用户、无 `BYPASSRLS`、是策略目标角色成员**，任一不满足即**拒绝启动**（fails closed —— 这类角色会静默绕过 RLS，比连不上更危险）；事务内 `SET LOCAL ROLE` 切到策略角色，并以 `app.*` GUC 注入请求上下文，注入失败即中止事务。证据：**2026-10-25 / 2026-10-26 在真实 PostgreSQL 16.15 上以应用角色 `omnilore_app` 的两次一次性人工验证（两套独立环境）**（**非 CI**，验证脚本未接进 CI），三条探针全部 PASS（未授权空间 0 行 / 授权后 1 行以排除空表假阳性 / 连接角色 `superuser=false, bypassrls=false`），超级用户 `omnilore_migrator` 连接被拒绝启动；输出见第 6.1 节，可复跑脚本 `tools/verify_rls_app_role.py`（需真实 PG + 应用角色）。**离线自动化只有 5 条 mock 用例**（`tests/test_pg_runtime_wiring.py`：默认内存引擎、无 `DATABASE_URL` 时不接 PG、拒绝超用户 / BYPASSRLS 连接角色），**不连真实 PG**。**边界（必须一并读）**：该连接只做安全接入与启动自检，**业务数据层仍走内存 `RLSDatabaseEngine`** —— 本条**不**证明业务状态已持久化到 PostgreSQL，也**不**证明可多人共享；混合检索未接入运行时 |
 
 **当前统计（由测试守护，与 README / CHANGELOG 三处一致）：**
-`Implemented` 10 条 ｜ `Tested-real` 9 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
+`Implemented` 9 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
 
 ---
 
