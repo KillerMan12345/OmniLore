@@ -247,9 +247,29 @@ ruff check omnilore tests tools
 优先级：**P0** 阻塞发布或违反红线 ｜ **P1** 首发窗口内 ｜ **P2** 首发后 ｜ **Q2** 下季度
 执行者：**A** = agent 可自主完成 ｜ **M** = 维护者（需真人 / 凭证 / 出境）｜ **A+M** = 需配合
 
-### T1（P0，A+M）修 `windows-latest` 的 2 个 CI job —— **根因已定位并修复，CI 复验待推送**
+### T1（P0，A+M）修 `windows-latest` 的 2 个 CI job —— **仍未解决**
 
-**根因（已复现，不是猜测）：代码页，不是逻辑。**
+> **复验结果（2026-10-26，CI Run #4，commit `bf619c8`）：`windows-latest` py3.11 / py3.12 仍然红。**
+> 同一次运行里 `ubuntu-latest` ×2、`arm64`、`lint`、`DCO`、`integration-rls` 全部绿
+> （`integration-rls` 已连续 3 次绿灯）。也就是说：下面这套代码页修复**落地后并未消除**
+> CI 上 windows 的失败 —— 它可能只解释了其中的**一部分**用例，或者 CI 环境里还有别的成因。
+>
+> **不要再基于「编码假设」继续推断，先拿日志。** 失败点仍是 `step 5`（离线测试）退出码 1：
+> `https://github.com/KillerMan12345/OmniLore/actions/runs/40284630216/job/121445301101`（py3.11）
+> 与 `.../job/121445301180`（py3.12）。job 日志 API 需 admin（返回 403），
+> **只能由维护者从网页复制 `FAIL:` / `ERROR:` 与紧随的 traceback**。
+>
+> 已排除的方向（别再试）：① 临时目录带**显式** Everyone ACE（父目录显式 ACE 在子文件上是继承型，
+> `/inheritance:r` 照样清除）；② Windows**平台 API 缺失**（`icacls` / `whoami` 在 runner 上存在，
+> 且 Linux 侧的无条件调用已于 `5d513fe` 修掉）。
+>
+> 接手建议：拿到日志后，先用 `PYTHONIOENCODING=cp1252` + `PYTHONUTF8=1` 两种组合各跑一遍本地全量，
+> 看能否复现；不能复现就说明是 runner 独有因素（PowerShell 默认 shell、`D:\a\_temp` 路径、
+> `runneradmin` 账户 ACL、或 `actions/checkout` 的 `core.autocrlf`），需按日志逐条比对。
+
+以下是**已落地但未能消除 CI 失败**的代码页分析与修复，保留作为线索（不是结论）。
+
+**原始假设（本机可复现，但不是 CI 的完整成因）：代码页，不是逻辑。**
 
 - `windows-latest` 的 runner 是 **en-US**，locale 编码 **cp1252**；ubuntu / arm64 是 UTF-8；
   开发者本机是 zh-CN（cp936）。而本项目**所有面向用户的文案都是中文**。
@@ -459,6 +479,8 @@ G2 门禁要求先手动跑一次 demo 并存档输出。
 | 29 | 补多版本矩阵 | 新建 `envs/omnilore311` / `omnilore312` 两个隔离 venv | 3.11 / 3.12 / 3.13 各跑一遍全量。**3.11 上抓到一个真 bug**：新守卫用 `REPO_ROOT.rglob("*.md")` 会钻进 `.venv/`（本地是 WSL 建的、含断链符号链接）→ `OSError: [WinError 1920]`；3.13 的 pathlib 会吞掉该错误、3.11 直接 ERROR。已改为 `os.walk` 进入前剪枝，三版本复跑均绿 |
 | 30 | 处理 QA 复核意见 | `tests/test_w0_launch.py`（EOF 空行）、`docs/ROADMAP_STATUS.md`（G2 与诚实口径的两套说法） | QA 判定 🟡 条件 Go，提出 2 处收尾项，均已修；`git diff --check` 现退出 0 |
 | 31 | **T3 代码落地但未进日志、未验证** | `omnilore/pg_engine.py`（新增）、`omnilore/engine.py:1667`、`sql/001`（+19）、`tests/test_t3_pg_backend.py`（新增） | 又一轮外部会话实现 `PgDatabaseEngine` 并按 `DATABASE_URL` 接线，**但没有更新第 19–30 条日志、也没有更新任何文档**。我复核：151 项仍全绿、ruff 绿、无硬编码凭据；`test_t3_pg_backend.py` 是**手动 smoke 脚本**（无 `TestCase`，`discover` 不执行，需真实 PG）。**故未升级任何「持久化」口径**（无 CI/自动化证据），改为在 T3 段落写明「代码已落地、未验证、文档刻意不升级」并给出接手动作 |
+| 32 | **提交并推送** | 22 文件（+1303 / −241） | `git diff --check` 报了 9 处行尾空白（`engine.py` 的 `_record_audit(...)` 续行），已清；151 项复跑全绿后提交 `bf619c8` 并推送 |
+| 33 | **CI Run #4 复验 → 修正 T1 的错误结论** | `docs/HANDOVER.md`（T1 段落） | Run #4：ubuntu ×2 / arm64 / lint / DCO / `integration-rls` ✅（RLS 第 3 次绿灯），**`windows-latest` ×2 仍红**。据此把 T1 由「根因已定位并修复」改为「**仍未解决**」，并补上：已排除方向、需维护者提供日志的两个 job 链接、接手排查建议（runner 独有因素：默认 shell / `D:\a\_temp` / `runneradmin` ACL / `core.autocrlf`） |
 
 
 **更早的历史**（W0 首发准备、W2–W3、R-05m、R-08b、R-04b、PG 安全连接层等）见 `git log` 与 `CHANGELOG.md`。
