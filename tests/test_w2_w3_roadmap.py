@@ -15,7 +15,8 @@ OmniLore W2 / W3 路线图回归测试
 * **R-08b（真实 PG 集成 CI）** `TestCiIntegrationConfig`
   `.github/workflows/ci.yml` 的 `integration-rls` job 在**配置层**被守住：镜像 tag 命名、
   `pg_isready` 健康检查、不挂 initdb 种子、以及「退出码 2/3 必须让 job 红」的失败语义。
-  本组**只读 YAML 文本**，不执行 docker —— 它证明「配置正确」，不证明「CI 真的会绿」。
+  本组**只读 YAML 文本**，不执行 docker —— 它证明「配置正确」，不证明「CI 会一直绿」。
+  （该 job 已于 2026-10-26 真实运行并连续 2 次绿灯，见 `docs/FEATURE_STATUS.md`。）
 * **R-05m（证据包导出）** `TestAuditBundle` / `TestAuditBundleCli`
   `omnilore audit-bundle` 导出的 `audit-bundle.json` 必须**真的在校验**：改掉 CAS 里一个字节，
   结论就要变成 `mismatch`、退出码变成 3。这一组是「可审计」从原理变成证据的那一步。
@@ -598,6 +599,7 @@ class TestHonestFeatureStatus(unittest.TestCase):
                 "name": cells[0],
                 "state": cells[1].strip("`"),
                 "verify": cells[3] if len(cells) > 3 else "",
+                "remark": cells[4] if len(cells) > 4 else "",
             })
         return rows
 
@@ -735,8 +737,9 @@ class TestHonestFeatureStatus(unittest.TestCase):
         self.assertTrue(first_screen, "README 找不到首屏")
         for capability, allowed_states in (
             ("不可变原始证据", ("Implemented",)),
-            # RLS 在 2026-10-24 的真实 PG 验证后升为 Tested-real；但只能以「人工一次性
-            # 证据」的身份出现，不许写成「已由 CI 验证」。
+            # RLS 起始于 2026-10-24 的真实 PG 人工验证；自 2026-10-26 起改由 CI 的
+            # `integration-rls` job 持续验证（连续 2 次绿灯）。升级只改证据性质，
+            # **不改覆盖范围** —— 下面 ①b 守住这层限定。
             ("行级安全策略", ("Tested-real",)),
             ("混合检索", ("Simulated",)),
         ):
@@ -750,7 +753,13 @@ class TestHonestFeatureStatus(unittest.TestCase):
                 f"首屏「{capability}」未标注 {'/'.join(allowed_states)}",
             )
 
-        # ①b RLS 升级必须自带「人工 / CI 待接入」这层限定，不许变成持续证据的口吻
+        # ①b RLS 徽章必须同时交代两件事：证据**来自真实 PostgreSQL 的自动化 CI**，
+        #    以及**这不等于业务运行时已接入 PG / 不等于持久化**。
+        #
+        #    为什么改成这两条：旧断言钉的是「手动验证 + CI 尚未接入」。现在 `integration-rls`
+        #    job 已连续 2 次绿灯，旧口径已经不成立，断言必须跟着换成新口径 —— 但守卫的目的
+        #    没变：防止把 RLS 说成「业务运行时已接入 / 数据已持久化」。只放宽成空断言是
+        #    本项目反复踩过的坑（空转守卫），所以这里仍然要求两件事同时出现。
         screen_lines = first_screen.splitlines()
         rls_index = next(
             (i for i, line in enumerate(screen_lines)
@@ -761,8 +770,25 @@ class TestHonestFeatureStatus(unittest.TestCase):
         # 徽章可能跨行书写（本仓库就是），因此把该徽章起算的 3 行算作同一条声明
         rls_claim = "\n".join(screen_lines[rls_index:rls_index + 3])
         self.assertIn("Tested-real", rls_claim)
-        self.assertIn("手动验证", rls_claim, "RLS 的 Tested-real 必须写明是「手动验证」")
-        self.assertIn("CI", rls_claim, "RLS 的 Tested-real 必须写明 CI 尚未接入")
+        # ① 证据来自真实 PostgreSQL 上的自动化 CI（不是内存引擎、也不是一次性人工）。
+        #    只写「CI 已接入」不够 —— 必须写成**已经绿灯**，否则「接入但从未跑过」也能过关。
+        self.assertIn("CI", rls_claim, "RLS 的 Tested-real 必须写明证据来自 CI")
+        self.assertIn("真实 PostgreSQL", rls_claim, "RLS 的 Tested-real 必须写明证据跑在真实 PostgreSQL 上")
+        self.assertIn("探针", rls_claim, "RLS 的 Tested-real 必须写明跑的是哪三条探针")
+        self.assertIn("绿灯", rls_claim, "RLS 的 Tested-real 必须写明 CI **已经绿灯**，而不是「已接入、待绿灯」")
+        self.assertNotIn(
+            "待首次绿灯", rls_claim,
+            "首屏 RLS 徽章仍写着「待首次绿灯」—— `integration-rls` job 已连续 2 次绿灯，"
+            "这是已被真实运行证伪的旧口径",
+        )
+        # ② 仍然明确「不等于业务运行时已接入 PG / 不等于持久化」——只写「不等于」不够，
+        #    必须点名到「业务运行时」或「持久化」，否则把限定删掉照样是绿（空转守卫）。
+        self.assertRegex(
+            rls_claim,
+            r"(不等于|不证明|不代表)[^\n]{0,40}(业务运行时|持久化)",
+            "RLS 徽章必须写明「CI 绿灯 ≠ 业务运行时已接入 PG / ≠ 数据已持久化」；"
+            "只写「不等于」而不点名到「业务运行时 / 持久化」视为空转守卫",
+        )
 
         # ② 降级组合表：四行必须连成一张表（曾被注释从中间切断），且 `hybrid` 有边界说明
         degrade = _markdown_section(self.readme, "## 降级与上报")
@@ -802,7 +828,8 @@ class TestHonestFeatureStatus(unittest.TestCase):
         upgraded = "真实 PostgreSQL RLS 策略与跨空间读拦截"
         self.assertEqual(
             rows.get(upgraded), "Tested-real",
-            f"「{upgraded}」应依据 2026-10-24 真实 PG 验证标 Tested-real",
+            f"「{upgraded}」应依据 `integration-rls` job 在真实 PostgreSQL 上的"
+            "CI 持续验证（自 2026-10-26 起连续 2 次绿灯）标 Tested-real",
         )
         # 这三条探针只验证了「策略挂载 + 跨空间读拦截」；下面这些都没被覆盖，必须守住
         must_stay_simulated = (
@@ -821,10 +848,59 @@ class TestHonestFeatureStatus(unittest.TestCase):
                 f"「{name}」没有被真实 PG 探针覆盖，不得升级（这是标注红线）",
             )
         self.assertEqual(
-            rows.get("真实 PostgreSQL 集成 CI"), "Implemented",
-            "自动化集成 CI 已接入 Actions 的 integration-rls job，故标 Implemented；"
-            "但首次 CI 绿灯之前不得升 Tested-real —— 配置正确 ≠ 已经跑过（详见矩阵备注）",
+            rows.get("真实 PostgreSQL 集成 CI"), "Tested-real",
+            "自动化集成 CI 已接入 Actions 的 integration-rls job，并已于 2026-10-26 "
+            "真实运行、连续 2 次绿灯，达到「连续 ≥2 次绿灯」的升级门槛。"
+            "升级**不放宽覆盖范围**：该 job 只跑独立 SQL 探针，不覆盖业务运行时接线"
+            "（详见矩阵备注）",
         )
+
+    def test_the_two_real_pg_exceptions_keep_their_own_evidence_kind(self) -> None:
+        """两条真实 PG 例外的**证据性质不许混写**：①是 CI 持续验证，②仍是人工一次性、非 CI。
+
+        为什么单独守这一条：CI 绿灯后最容易出现的虚标是「顺手把②也说成已由 CI 验证」——
+        而 `tools/verify_rls_app_role.py` 根本没接进 CI。反过来，把①说回「待首次绿灯」
+        也是虚标（那是已经被真实运行证伪的旧口径）。
+        """
+        row_of = {
+            row["name"]: row for row in self._matrix_rows()
+        }
+        rls_row = row_of.get("真实 PostgreSQL RLS 策略与跨空间读拦截") or {}
+        self.assertIn(
+            "CI", rls_row.get("remark", ""),
+            "①「真实 PostgreSQL RLS 策略与跨空间读拦截」必须写明证据来自 CI 持续验证",
+        )
+        self.assertNotIn(
+            "待首次绿灯", rls_row.get("remark", ""),
+            "① 仍写着「待首次绿灯」—— 该 job 已连续 2 次绿灯，这是已被证伪的旧口径",
+        )
+        self.assertRegex(
+            rls_row.get("remark", ""),
+            r"(不等于|不证明)[^\n]{0,60}(业务运行时|持久化)",
+            "① 的备注必须写明「不等于业务运行时已接入 PG / 不等于持久化」",
+        )
+
+        app_role_row = row_of.get("PostgreSQL 安全连接层与 RLS 生效验证") or {}
+        self.assertIn(
+            "非 CI", app_role_row.get("remark", ""),
+            "②「PostgreSQL 安全连接层与 RLS 生效验证」的验证脚本没有接进 CI，"
+            "不得写成 CI 验证",
+        )
+
+    def test_arm64_row_reports_its_actual_green_run_count(self) -> None:
+        """arm64 必须写明**实际绿灯次数**（已 1 次、样本尚少），不许停留在「待首次绿灯」。"""
+        arm_rows = [
+            row for row in self._matrix_rows() if row["name"].startswith("ARM64 架构验证")
+        ]
+        self.assertTrue(arm_rows, "矩阵缺少 ARM64 条目")
+        self.assertEqual(arm_rows[0]["state"], "Implemented", "arm64 只有 1 次绿灯，仍应标 Implemented")
+        remark = arm_rows[0].get("remark", "")
+        self.assertNotIn(
+            "待首次绿灯", remark,
+            "arm64 已于 2026-10-26 首次绿灯，「待首次绿灯」是已被证伪的旧口径",
+        )
+        self.assertIn("1 次绿灯", remark, "arm64 备注必须写明实际绿灯次数（1 次）")
+        self.assertIn("样本尚少", remark, "arm64 备注必须写明样本尚少，不得暗示已被充分验证")
 
     def test_verify_rls_pg_refuses_a_non_empty_database(self) -> None:
         """非空库必须 fail-closed（exit 2 + 可执行指引），且**绝不**自动清库。"""
@@ -975,7 +1051,8 @@ class TestCiIntegrationConfig(unittest.TestCase):
     """R-08b：真实 PostgreSQL 集成 CI 的**配置**守卫。
 
     只读 `ci.yml` 的 YAML 文本，**不**执行 docker、**不**连数据库 —— 因此它证明的是
-    「配置正确」，不是「CI 真的会绿」。后者只能由首次真实运行回答。
+    「配置正确」，不是「CI 会一直绿」。后者由真实运行回答：该 job 已于 2026-10-26
+    真实运行并连续 2 次绿灯（Run #1 `8d0ecc3`、Run #2 `5d513fe`）。
 
     为什么这类测试值得写：CI 配置是「没人跑就等于没写」的典型地带，而且它的失败方式
     往往是**假绿**（跳过了却看起来通过），比不跑更糟。下面每条断言都对应一次真实踩过的

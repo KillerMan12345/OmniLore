@@ -3,9 +3,11 @@
 
 为什么这个脚本存在
 ------------------
-[``docs/FEATURE_STATUS.md``](../docs/FEATURE_STATUS.md) 里所有依赖真实 PostgreSQL 的能力
-都标注为 ``Simulated`` —— 因为仓库的自动化证据只来自**内存仿真引擎**
-（``omnilore.engine.RLSDatabaseEngine``），真实 PG 上没有 CI 证据。
+[``docs/FEATURE_STATUS.md``](../docs/FEATURE_STATUS.md) 里除两条例外之外的能力都标注为
+``Simulated`` —— 因为仓库的自动化证据只来自**内存仿真引擎**
+（``omnilore.engine.RLSDatabaseEngine``），真实 PG 上没有针对这些能力的 CI 证据。
+本脚本覆盖的那一条例外（真实 PostgreSQL RLS 策略与跨空间读拦截）**已由 CI 的
+``integration-rls`` job 持续复跑**（自 2026-10-26 起连续 2 次绿灯）。
 
 这个脚本就是补上那份证据的入口：它把你本地/自建的真实 PostgreSQL 拉起来做一组
 RLS 探针，并且**只在真的跑过之后才说验证过**。环境不具备时它以非零码退出并说明
@@ -395,7 +397,8 @@ def main() -> int:
 
     print("\n结论：已在真实 PostgreSQL 上取得 RLS 证据。")
     print("请把本次输出贴进 Issue/PR，作为 RLS 条目升级为 `Tested-real` 的依据。")
-    print("注意：单次手动验证 ≠ CI 证据；要长期生效需接入自动化集成 CI。")
+    print("注意：本脚本已由 CI 的 integration-rls job 每次 push 复跑（持续证据）；")
+    print("它只证明 sql/001 的 SQL 策略在真实 PG 上生效，不等于业务运行时已接入 PostgreSQL。")
     return EXIT_OK
 
 

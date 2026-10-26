@@ -46,12 +46,14 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 **诚实标注与贡献入口**
 
 - **公开路线图进度页**：新增 [`docs/ROADMAP_STATUS.md`](docs/ROADMAP_STATUS.md)，公开 8 周窗口的
-  S1–S5 里程碑、G0 / G2 / G3 门禁、维护者 / 首发后 / Q2 待办，并明确 `integration-rls`
-  与 arm64 job 都尚未首次运行、封闭验证当前样本量为 0。
+  S1–S5 里程碑、G0 / G2 / G3 门禁、维护者 / 首发后 / Q2 待办，并明确封闭验证当前样本量为 0
+  （CI 运行结论随实际结果更新：`integration-rls` 已连续 2 次绿灯、arm64 已首次绿灯、
+  `windows-latest` 的 py3.11 / py3.12 仍红且已列为已知未决）。
 - **R-13 能力状态矩阵（四态标注）**：新增 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)，
   README 里的**每一条能力**都标注 `Implemented` / `Tested-real` / `Simulated` / `Planned`
   四态之一，逐条对应，并由测试守护「README ↔ 矩阵 ↔ CHANGELOG 三处一致」。
-  当前 **32 条**能力标注：`Implemented` 11 条、`Tested-real` 8 条、`Simulated` 12 条、`Planned` 1 条。
+  当前 **32 条**能力标注：`Implemented` 10 条、`Tested-real` 9 条、`Simulated` 12 条、`Planned` 1 条
+  （`真实 PostgreSQL 集成 CI` 在 CI 连续 2 次绿灯后由 `Implemented` 升为 `Tested-real`）。
   ⚠️ 其中「混合检索（BM25 + 向量 + 代码符号）」标 `Simulated` —— `hybrid`（1024 维向量）
   路径在 CI 里是 monkeypatch 桩（无真实网络调用），只有 `keyword_only` 真实执行。
 - **R-13 威胁模型公开页**：新增 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)，
@@ -140,9 +142,11 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **R-11b ARM64 验证**：`.github/workflows/ci.yml` 新增独立 `arm64` job
   （`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner），跑同一套离线用例 + `ruff` + 冒烟；
   `integration-rls` **刻意保留在 x86**（不在新架构上再叠 service container 这个变量）。
-  ⚠️ 标注口径：该 job **尚未经过首次真实运行**，故为 `Implemented` 而非 `Tested-real`。
+  ⚠️ 标注口径：该 job **已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），
+  但**只有 1 次绿灯、样本尚少**，故仍为 `Implemented` 而非 `Tested-real`；
+  本项目对 CI 类条目升 `Tested-real` 的门槛是**连续 ≥2 次绿灯**。
 - **R-11b README 支持架构声明**：新增「支持架构」小节，写明 x86_64（CI 真实执行）与
-  arm64（CI 配置已就位、待首次绿灯）各自的验证方式。
+  arm64（CI 已首次绿灯、样本尚少，仍标 `Implemented`）各自的验证方式。
 
 **PostgreSQL 安全连接层（安全角色 + RLS 生效验证）**
 
@@ -170,8 +174,9 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   PostgreSQL 16.15 上以 `omnilore_app` 的**人工一次性**验证（**非 CI**，三条探针 PASS，
   超用户连接被拒；脚本可复跑）。**2026-10-26 已由主理人在另一套独立环境完整复现**：
   `sql/001` 建出 **21 条策略**、**7 张表启用 RLS**，三条探针再次全部 PASS，超级用户
-  `postgres` 连接被 `PgRuntime` 拒绝（fails closed 生效）。两次均为人工一次性验证，
-  **仍不是 CI 持续证据**——持续取证要等 `integration-rls` job 首次绿灯。
+  `postgres` 连接被 `PgRuntime` 拒绝（fails closed 生效）。两次均为人工一次性验证
+  （脚本未接进 CI），**本条仍不是 CI 持续证据**——它验证的是「安全连接这条路径」，
+  与 `integration-rls` job 跑的独立 SQL 探针不是同一条路径，不因后者绿灯而升级。
   它证明的是「**安全连接这条路径上 RLS 确实生效**」，
   **不等于**「业务数据已持久化」—— `OmniLoreEngine` 的业务数据层**仍然走内存
   `RLSDatabaseEngine`**，`AsyncpgRepository` 仍未被业务路径实例化；把这次接线读成
@@ -190,23 +195,50 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   真的出现了 3 条 `[PASS]`，防止「exit 0 但其实没跑探针」的假绿。
   失败时另跑一步诊断（`pg_class.relrowsecurity` / `pg_policy` / documents 表结构），
   只在失败时执行，避免污染成功日志。
-  ⚠️ 标注口径：`真实 PostgreSQL 集成 CI` 为 **`Implemented`**，不是 `Tested-real` ——
-  **配置正确 ≠ 已经跑过**；首次 CI 绿灯之前，RLS 条目也不得写成「已由 CI 持续验证」。
+  ⚠️ 标注口径：`真实 PostgreSQL 集成 CI` **已由 `Implemented` 升为 `Tested-real`** ——
+  该 job 已于 2026-10-26 在 GitHub Actions 上真实运行并**连续 2 次绿灯**（Run #1 `8d0ecc3`、
+  Run #2 `5d513fe`，3 条探针均 PASS），达到「连续 ≥2 次绿灯」的门槛。
+  **边界（不因升级而放宽）**：该 job 只跑**独立 SQL 探针**，**不覆盖 CLI / MCP 业务运行时
+  的接线**，也不意味着业务数据已走 PostgreSQL 或已持久化。
   配套 7 项配置守卫（`TestCiIntegrationConfig`，只读 YAML、不执行 docker）分别防：
   镜像 tag 写成不存在的 `pg16-v0.8.0`、健康检查漏 `-U`/`-d`、把 DDL 预挂进 initdb 钩子
   导致探针 `exit 2`、`continue-on-error`／吞退出码造成的假绿、以及新 job 挤掉原有离线矩阵。
-- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 145 个测试 +
+- **CI 首次真实运行（2026-10-26）与随之而来的口径纠正**：本仓库此前从未在 GitHub Actions 上
+  真实运行过，一批文档因此写着「配置已就位、**待首次绿灯**」「真实 PG **没有持续 CI 证据**」。
+  现在 CI 已真实运行两次，结论如下，并已同步到 README / `docs/FEATURE_STATUS.md` /
+  `docs/ROADMAP_STATUS.md` / `docs/THREAT_MODEL.md` / 本文件（五处口径一致）：
+  - Run #1（`8d0ecc3`）：`integration-rls` ✅（3 条探针全部 PASS）；`arm64` ❌、
+    test 矩阵 ❌（icacls 在 Linux 上无条件调用），二者由 `5d513fe` 修复。
+  - Run #2（`5d513fe`）：`integration-rls` ✅（再次 3 探针 PASS）；**`arm64` ✅ 首次绿灯**；
+    `ubuntu-latest` py3.11 / 3.12 ✅；lint ✅；DCO ✅。
+    **`windows-latest` 的 py3.11 / py3.12 仍失败** —— 已知未决，已在路线图「待验证」表中如实列出。
+  - 据此：`真实 PostgreSQL 集成 CI` 由 `Implemented` 升 `Tested-real`（连续 2 次绿灯）；
+    `真实 PostgreSQL RLS 策略与跨空间读拦截` 的证据性质由「人工一次性」改为「CI 持续验证」，
+    **但边界不变**：它只证明 `sql/001` 的 SQL 策略在真实 PG 上生效，
+    **不等于业务运行时已接入 PostgreSQL / 数据已持久化**。
+    `ARM64 架构验证` 因只有 1 次绿灯、样本尚少，维持 `Implemented`。
+- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 147 个测试 +
   ruff + DCO 校验 + 静态红线守卫，全程不使用任何 Secret；**另有一个独立的 `integration-rls`
   job 需要真实 PostgreSQL service container**（见上），它是全仓唯一需要外部服务的门禁，
   同样不使用任何 Secret。
-- **测试套件**：145 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、34 项首发专项、
-  57 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
-  证据包导出与篡改测试 / 21 条 RLS 策略注释守卫）、30 项 W6 专项
+- **测试套件**：147 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、34 项首发专项、
+  59 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
+  证据包导出与篡改测试 / 21 条 RLS 策略注释守卫 / 两条真实 PG 例外的证据性质守卫）、
+  30 项 W6 专项
   （provider 抽象 / 四个环境变量真生效 / 维度守卫 / 降级回归 / 统一数据目录 / arm64 配置）、
   5 项 PG 运行时接线专项（`test_pg_runtime_wiring.py`：内存引擎默认 / 无 `DATABASE_URL`
   时不接 PG / 拒绝超用户与 `BYPASSRLS` 连接角色 —— **离线 mock，不连真实 PG**）。
-  140 项业务用例跑在 `RLSDatabaseEngine` **内存仿真引擎**上，与 PostgreSQL RLS 同构但
+  140 项业务用例跑在 `RLSDatabaseEngine` **内存仿真引擎**上（另有 2 条守卫只做静态文本
+  判定、不碰引擎），与 PostgreSQL RLS 同构但
   **不是真实 PostgreSQL**；新增的 5 项接线用例同样离线（mock），不产生真实 PG 证据。
+- **`docs/HANDOVER.md`（交接文档）**：面向接手本项目的下一个 agent 或新贡献者，
+  目标是不追问即可开工。含：项目目标与三层定位、技术栈与六项拍板决策、
+  进度快照与 CI 实况、源码路径地图（19 个模块含行数）、产出归档索引、
+  剩余任务清单（11 项，各带优先级 / 依赖 / 验收标准 / 执行者）、5 条已知未决问题、
+  12 条硬性红线（含「平台专属命令必须先判平台」「守卫必须经变异测试验证」
+  「CI 类条目升 `Tested-real` 需连续 ≥2 次绿灯」）、环境要求与操作日志。
+  该文档**自包含**：不依赖任何未入库的本机文件（内部策略文档、agent 记忆、
+  执行日志均不随仓库分发，其历史表述已被 CI 实际运行证伪，现状以能力矩阵为准）。
 
 ### Changed（变更）
 
@@ -221,7 +253,9 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   140 项业务用例跑在 `omnilore.engine.RLSDatabaseEngine` 上，这是一个**内存仿真引擎**，
   与 PostgreSQL RLS **同构但不是真实 PostgreSQL**；新增的 5 项 PG 运行时接线用例用
   **离线 mock**，也不连真实 PG；因此 RLS 相关条目一律标 `Simulated`
-  （两条 `Tested-real` 例外均为真实 PG 上的人工一次性证据，见能力矩阵第 6 / 6.1 节）。
+  （两条 `Tested-real` 例外的证据性质**不同**：①「真实 PostgreSQL RLS 策略与跨空间读拦截」
+  已由 CI 的 `integration-rls` job 持续验证，②「PostgreSQL 安全连接层与 RLS 生效验证」
+  仍是人工一次性、**非 CI**；见能力矩阵第 6 / 6.1 节）。
 - **测试守卫覆盖「宣称 ↔ 证据」的每一处断点**：`tests/test_w2_w3_roadmap.py` 逐条守住
   主权配置可见性（4 条）、`docker-compose` 环境变量转发、镜像 tag 命名规则、
   README 全文裸宣称（2 条）、RLS 升级红线、非空库 fail-closed、真实 PG 集成 CI 配置（7 条）。
@@ -230,7 +264,10 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   （3 条探针全部 PASS：7 张核心表 `rowsecurity=true` / 跨空间行未授权不可见 / 授权后同一行可见）。
   证据记录（含探针完整输出与「它没有证明什么」）内联在
   [`docs/FEATURE_STATUS.md` 第 6 节](docs/FEATURE_STATUS.md)，**不引用**任何 gitignored 的执行日志。
-  证据强度：这是一次性**人工**验证；持续取证由 `integration-rls` job 承担，**首次绿灯**后才成立。
+  证据强度：起点是一次性**人工**验证；**自 2026-10-26 起已由 `integration-rls` job 在 CI 上
+  持续验证并连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`）。
+  **升级不放大覆盖范围**：它仍然只证明 `sql/001` 的 SQL 策略在真实 PG 上生效，
+  **不等于业务运行时已接入 PostgreSQL / 数据已持久化**。
 - **升级范围严格限定**：`四维权限交集`、`Profile 硬性隔离`、`撤销即时失效`、`组织树只读继承`、
   `混合检索` 等**未被这三条探针覆盖**，一律维持 `Simulated`，并由测试守住「不许跟涨」。
 - **`tools/verify_rls_pg.py` 对非空库 fail-closed**：目标库已有本项目的表时，
@@ -319,13 +356,21 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   的应用角色 + 事务内 `SET LOCAL ROLE` + RLS GUC 注入），但它只做安全接入与启动自检，
   **尚未**承载业务读写 —— 业务路径仍未实例化 `AsyncpgRepository`；
   **容器模式也不能作为持久化运行模式**。
-- **真实 PG RLS 的持续证据还在等首次 CI 绿灯**：`integration-rls` job 已接入（每次 push 在
-  干净的真实 PostgreSQL 16 上重跑同三条探针），但它**尚未经过首次真实运行验证**；在此之前
-  只有两次人工一次性验证（2026-10-24 策略探针、2026-10-25 应用角色运行时连接层探针，
-  均**非 CI**）。因此仅「真实 PostgreSQL RLS 策略与跨空间读拦截」与「PostgreSQL 安全连接层
-  与 RLS 生效验证」为 `Tested-real`、「真实 PostgreSQL 集成 CI」为 `Implemented`，其余依赖
-  真实 PG 的能力一律 `Simulated`（逐条见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)，
+- **真实 PG 证据只覆盖「SQL 策略本身」，不覆盖业务运行时**：`integration-rls` job 已于
+  2026-10-26 在 GitHub Actions 上真实运行并**连续 2 次绿灯**（每次 push 在干净的真实
+  PostgreSQL 16 上重跑同三条探针），因此「真实 PostgreSQL RLS 策略与跨空间读拦截」与
+  「真实 PostgreSQL 集成 CI」为 `Tested-real`。**但绿灯只意味着 SQL 探针可复现通过** ——
+  CLI / MCP 业务读写仍走内存引擎，业务运行时**尚未**接入 PostgreSQL。
+  「PostgreSQL 安全连接层与 RLS 生效验证」同为 `Tested-real`，但它的证据是
+  2026-10-25 / 2026-10-26 的**两次人工一次性验证、非 CI**（脚本未接进 CI），
+  不因 `integration-rls` 绿灯而升级。其余依赖真实 PG 的能力一律 `Simulated`
+  （逐条见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)，
   可自行复跑 `make verify-*` 与 `python tools/verify_rls_app_role.py`）。
+- **已知未决：CI 的 `windows-latest` 离线矩阵（py3.11 / py3.12）在 Run #2（`5d513fe`）仍然失败**
+  （同 commit 的 `ubuntu-latest` 两个 job、`integration-rls`、`arm64`、lint、DCO 均已绿）。
+  原因尚未定位；在它转绿之前，Windows 不得写成「CI 已验证」，只能写「本地已验证」。
+- **arm64 只有 1 次 CI 绿灯（样本尚少）**：2026-10-26 首次绿灯后仍维持 `Implemented`，
+  本项目对 CI 类条目升 `Tested-real` 的门槛是连续 ≥2 次绿灯。
 - **文件系统与数据库不承诺跨系统事务原子性**：用 Outbox 补偿与一致性对账把不一致显式报出，
   详见 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)。
 - **未宣称任何合规认证**（SOC2 / ISO / 等保）。措辞严格限定为「技术可追溯」。

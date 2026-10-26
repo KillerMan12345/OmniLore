@@ -18,22 +18,27 @@
 | `Simulated` | 只在**与 PostgreSQL RLS 同构的内存仿真引擎**上验证 | 真实 PostgreSQL **没有 CI 证据**；这是本项目最需要被如实标注的一类 |
 | `Planned` | 尚未实现，或仅有模板而未经自动化验证 | 代码未落地，或落地了但没有自动化证据 |
 
-**红线：真实 PG RLS 的持续证据尚未落地，目前只有人工验证。** 例外有两条，都是**人工、
-一次性、非 CI**（证据记录见本文第 6 节与第 6.1 节，备注里必须写明是人工验证）：
+**红线：真实 PG 的例外只有两条，且必须写明各自「证明了什么 / 没证明什么」。**
+两条例外的**证据性质不同**，不许混为一谈（证据记录见第 6 节与第 6.1 节）：
 
-1. 2026-10-24 在**真实 PostgreSQL 16.15** 上以策略角色跑通 3 条探针（策略挂载 / 跨空间
-   不可见 / 授权后可见）→ 「真实 PostgreSQL RLS 策略与跨空间读拦截」标 `Tested-real`。
-2. 2026-10-25 在**真实 PostgreSQL 16.15** 上以应用角色 `omnilore_app` 走运行时连接层跑通
-   3 条探针（未授权 0 行 / 授权后可见 / 连接角色非超用户且无 BYPASSRLS）→
-   「PostgreSQL 安全连接层与 RLS 生效验证」标 `Tested-real`。
+1. **「真实 PostgreSQL RLS 策略与跨空间读拦截」—— 现在由 CI 持续验证。**
+   2026-10-24 在**真实 PostgreSQL 16.15** 上以策略角色跑通 3 条探针（策略挂载 / 跨空间
+   不可见 / 授权后可见）；**自 2026-10-26 起，`.github/workflows/ci.yml` 的 `integration-rls`
+   job 已在 CI 上真实运行并连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`），
+   每次 push 都起一个干净的真实 PostgreSQL 16（`pgvector/pgvector:0.8.0-pg16`）重跑同三条
+   探针。**它证明的是 `sql/001` 的 SQL 策略本身在真实 PG 上生效**；**不证明** CLI / MCP
+   业务运行时已接入 PostgreSQL，**不证明**结构化状态已持久化（业务数据层仍是内存引擎，
+   见第 2.1 节）。因此「真实 PostgreSQL 集成 CI」这条同步升为 `Tested-real`，但备注里必须
+   写明「只跑独立 SQL 探针、不覆盖业务运行时接线」。
+2. **「PostgreSQL 安全连接层与 RLS 生效验证」—— 仍然只是人工一次性证据、非 CI。**
+   2026-10-25 / 2026-10-26 在**真实 PostgreSQL 16.15** 上以应用角色 `omnilore_app` 走运行时
+   连接层跑通 3 条探针（未授权 0 行 / 授权后可见 / 连接角色非超用户且无 BYPASSRLS）。
+   **验证脚本 `tools/verify_rls_app_role.py` 没有接进 CI**，未来也不会因为
+   `integration-rls` job 绿灯而自动升级。
 
-**第 2 条的边界必须一起读**：它证明的是「安全连接这条路径上 RLS 确实生效」，**不证明**
-业务数据已持久化到 PostgreSQL —— 业务数据层仍是内存引擎（见第 2.1 节）。
-
-自动化取证已经接线但**尚未跑过**：`.github/workflows/ci.yml` 的 `integration-rls` job
-每次 push 都会起一个干净的真实 PostgreSQL 16（`pgvector/pgvector:0.8.0-pg16`）重跑同三条
-探针。在该 job **首次绿灯之前**，这份证据仍然只算「一次性人工」，不算持续证据 ——
-所以「真实 PostgreSQL 集成 CI」这条本页只标 `Implemented`、不标 `Tested-real`。
+**「CI 类条目升 `Tested-real`」的门槛**：**连续 ≥2 次绿灯**（单次绿灯可能是"恰好没红"，
+不构成可复现信号）。`integration-rls` 已达 2 次，故升级；`arm64` job 目前**只有 1 次绿灯**
+（2026-10-26 首次），**样本尚少**，维持 `Implemented`，待累计 ≥2 次连续绿灯后再评估。
 
 其余依赖真实 PostgreSQL 的条目（四维交集 / Profile 隔离 / 撤销失效 / 组织树继承等）
 一律维持 `Simulated` —— 探针没有覆盖它们，不许顺手抬高。
@@ -50,20 +55,25 @@
 - 它没有真实的 MVCC、锁、事务隔离级别与 `pgvector` 索引行为；
 - 进程退出后结构化状态清空（磁盘上的原始资产与 Markdown 知识页保留）。
 
-所以：**「145 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已由 CI 持续验证」。**
-其中 140 个业务用例跑在内存仿真引擎上，新增的 5 个 `test_pg_runtime_wiring.py` 用例用
+所以：**「147 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已验证」。**
+其中 140 个业务用例跑在内存仿真引擎上（另有 2 条守卫只做静态文本判定、不碰引擎），
+新增的 5 个 `test_pg_runtime_wiring.py` 用例用
 **离线 mock** 钉住 PG 运行时接线（默认内存引擎 / 拒绝超用户与 BYPASSRLS 连接角色），
 同样不连真实 PG。
-本页的例外只有两处，且都是**手动、一次性**证据：① 2026-10-24 在真实 PostgreSQL 16.15 上
-跑了 `make verify-rls-pg` 的三条探针并全部 PASS（完整输出见第 6 节）；② 2026-10-25 在同一
-版本的真实 PostgreSQL 16.15 上以应用角色 `omnilore_app` 走运行时连接层跑通三条探针
-（完整输出见第 6.1 节）。它们证明了「这套策略在真实 PG 上确实生效」，但一次性运行本身
-不能证明未来不回归。
+本页的例外只有两处，且**证据性质不同**：①「真实 PostgreSQL RLS 策略与跨空间读拦截」
+起自 2026-10-24 在真实 PostgreSQL 16.15 上的手动验证（完整输出见第 6 节），**现已由 CI
+的 `integration-rls` job 持续验证**（自 2026-10-26 起连续 2 次绿灯）；
+②「PostgreSQL 安全连接层与 RLS 生效验证」是 2026-10-25 / 2026-10-26 在同一版本真实
+PostgreSQL 16.15 上以应用角色 `omnilore_app` 走运行时连接层的**手动、一次性**证据
+（完整输出见第 6.1 节，**非 CI**）。它们证明了「这套策略在真实 PG 上确实生效」，
+但都不等于业务运行时已接入 PG。
 
-**持续取证已接线**：`.github/workflows/ci.yml` 的 `integration-rls` job 把同一组探针接进
-了每次 push（真实 PostgreSQL 16 service container + `pg_isready` 健康检查，零 Secret，
-exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所以本页不据此抬高任何标注。
-这句话在 README、本页、CHANGELOG 三处口径一致（由 `make verify-honesty` 守护）。
+**持续取证已经跑起来了**：`.github/workflows/ci.yml` 的 `integration-rls` job 每次 push
+都会起真实 PostgreSQL 16 service container（`pg_isready` 健康检查，零 Secret，
+exit 2/3 都会让 job 变红），**并已于 2026-10-26 连续 2 次真实绿灯**。
+**它只跑独立 SQL 探针，不覆盖 CLI / MCP 业务运行时的接线** —— 因此本页只据此升级
+「真实 PostgreSQL RLS 策略与跨空间读拦截」与「真实 PostgreSQL 集成 CI」两条，其余条目
+一律不许跟涨。这句话在 README、本页、CHANGELOG 三处口径一致（由 `make verify-honesty` 守护）。
 
 ---
 
@@ -104,7 +114,7 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 | Profile 硬性隔离 | `Simulated` | 核心能力 / Phase 0 | `make verify-rls` | 同上；profile 维度由引擎层判定、不由 SQL 策略表达，2026-10-24 的三条探针**未覆盖** profile 切换 |
 | 撤销即时失效 | `Simulated` | 核心能力 / Phase 0 | `make verify-rls` | `< 1ms` 为进程内缓存实测，非 PG 侧实测；PG 探针不涉及撤销链路，故不升级 |
 | 文件网关路径防御 | `Tested-real` | 核心能力 / Phase 0 | `make verify-paths` | 真实文件系统（symlink / Windows junction 回退）；已有 Linux / Windows 证据，当前没有 macOS CI，不宣称 macOS 已实跑 |
-| 真实 PostgreSQL RLS 策略与跨空间读拦截 | `Tested-real` | 核心能力 / Phase 0 | `make verify-rls-pg` | 依据 **2026-10-24 真实 PostgreSQL 16.15 手动验证**（3 条探针全部 PASS：7 张核心表 `rowsecurity=true`；跨空间行未授权不可见；授权后同一行可见）；**已接入自动化集成 CI**（`.github/workflows/ci.yml` 的 `integration-rls` job），**首次绿灯后本条才具备持续取证**；在此之前单次手动验证 ≠ 持续 CI 证据。「21 条策略注释」补课（R-08b）已落地：每条策略上方四段注释（保护什么 / 依赖维度 / 防什么 / 不覆盖什么），且策略逻辑被冻结（`TestRlsPolicyComments` 摘要不符即红） |
+| 真实 PostgreSQL RLS 策略与跨空间读拦截 | `Tested-real` | 核心能力 / Phase 0 | `make verify-rls-pg` | 证据性质已由「2026-10-24 一次性人工验证」升级为 **CI 持续验证**：`.github/workflows/ci.yml` 的 `integration-rls` job 每次 push 都在干净的真实 PostgreSQL 16 上重跑同 3 条探针（7 张核心表 `rowsecurity=true` / 跨空间行未授权不可见 / 授权后同一行可见），**自 2026-10-26 起已连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`）。**边界（必须一并读）**：CI 绿灯证明的是 `sql/001` 的 **SQL 策略本身**在真实 PG 上生效，**不等于 CLI / MCP 业务运行时已接入 PostgreSQL**，也**不等于**结构化状态已持久化 —— 业务读写仍走内存 `RLSDatabaseEngine`（见第 2.1 节）。「21 条策略注释」补课（R-08b）已落地：每条策略上方四段注释（保护什么 / 依赖维度 / 防什么 / 不覆盖什么），且策略逻辑被冻结（`TestRlsPolicyComments` 摘要不符即红） |
 | 多格式入库 | `Implemented` | 核心能力 / Phase 1 | `make verify-parsers` | Markdown / 代码解析与真实 `Pillow` PNG 入库有自动化用例；PDF 分支实现了 `pdfplumber` → `pypdf` 回退，但当前测试套件**没有构造或入库真实 PDF**，因此不标 `Tested-real` |
 | 混合检索（BM25 + 向量 + 代码符号） | `Simulated` | 核心能力 / Phase 1 | `make verify-search` | ⚠️ `hybrid` 路径在 CI 里是 **monkeypatch 桩**（无真实网络调用、无真实 1024 维向量）；`keyword_only` 路径才是真实执行的 |
 | AST 代码符号提取 | `Implemented` | 核心能力 / Phase 1 | `make verify-parsers` | 纯函数，无外部依赖 |
@@ -126,14 +136,14 @@ exit 2/3 都会让 job 变红）。它**尚未经过首次真实运行**，所�
 | 跨平台 LF 规范化 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-lf` | `windows-latest` 真实文件系统门禁 |
 | opt-in 匿名遥测 | `Planned` | 核心能力 / 尚未实现 | — | 决策已接受，实现排期 Q2 |
 | 模型 provider 抽象（R-04b） | `Implemented` | 核心能力 / 其他宣称 | `make verify-provider` | 向量来源可替换：`OMNILORE_EMBEDDING_PROVIDER` = `dashscope`（默认，行为与抽象前**逐字一致**）/ `openai`（任意 OpenAI 兼容端点：OpenAI / Azure / **Ollama** / vLLM / LM Studio）/ `none`；`OMNILORE_EMBEDDING_BASE_URL` + `OMNILORE_EMBEDDING_API_KEY` 指向自建端点（本地回环地址免 key）。四个曾经的「预留、不读取」变量（`OMNILORE_PRIMARY_MODEL` / `_ESCALATED_MODEL` / `_EMBEDDING_MODEL` / `_EMBEDDING_DIM`）**现已生效**，由 `ModelAdapterConfig.__post_init__` 读取，并有测试断言它们进入**真实请求体**。**证据边界**：用例用 `monkeypatch` 的假 HTTP 端点验证请求体/维度/降级，**没有对真实 OpenAI / Ollama 端点发过请求**，故不标 `Tested-real` |
-| ARM64 架构验证（R-11b） | `Implemented` | 核心能力 / 其他宣称 | —（CI `arm64` job） | CI 新增独立 `arm64` job（`ubuntu-24.04-arm`）跑同一套离线用例 + `ruff` + 冒烟；`integration-rls` 刻意留在 x86。**配置已就位、首次真实运行尚未发生** —— 配置正确 ≠ 已经跑过，故标 `Implemented` 而非 `Tested-real` |
+| ARM64 架构验证（R-11b） | `Implemented` | 核心能力 / 其他宣称 | —（CI `arm64` job） | CI 新增独立 `arm64` job（`ubuntu-24.04-arm`）跑同一套离线用例 + `ruff` + 冒烟；`integration-rls` 刻意留在 x86。**已于 2026-10-26 在 CI 上首次绿灯**（Run #2，commit `5d513fe`），**但只有 1 次绿灯、样本尚少**，故仍标 `Implemented` —— 本项目对 CI 类条目升 `Tested-real` 的门槛是**连续 ≥2 次绿灯**，累计达标后再评估升级 |
 | 统一数据目录解析（R-11b） | `Implemented` | 核心能力 / 其他宣称 | `make verify` | 只有一个解析入口 `omnilore.pathutil.resolve_data_dir`；`ops/index` / `ops/bootstrap.json` / `ops/audit_bundles` 同根。静态守卫（`TestUnifiedDataDir`）禁止任何模块自己调 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR` |
 | n8n 工作流（3 条） | `Implemented` | 核心能力 / 其他边界明确的能力 | `make verify` | `test_09_n8n_workflows_and_internal_worker_gateway` 自动验证三份 JSON 的结构、无硬编码凭据，以及内部 Worker 网关的入库 / 恢复 / lint / 备份；**尚未在真实 n8n 实例导入、启动和运行**，故不标 `Tested-real` |
-| 真实 PostgreSQL 集成 CI | `Implemented` | 核心能力 / 其他宣称 | `make verify-rls-pg` | 已接入 Actions 的 `integration-rls` job（`pgvector/pgvector:0.8.0-pg16` service container + `pg_isready -U -d` 健康检查 + 零 Secret；exit 2「未验证」/ exit 3「结论为否」**逐码**转成 job 失败，无 `continue-on-error`）。**待首次 CI 运行确认后**方可视为持续证据 —— 配置正确 ≠ 已经跑过；而且该 job 只跑独立 SQL 探针，**不证明 CLI / MCP 应用运行时已接入 PostgreSQL** |
-| PostgreSQL 安全连接层与 RLS 生效验证 | `Tested-real` | 核心能力 / 其他宣称 | `python tools/verify_rls_app_role.py` | `omnilore/pg_runtime.py` 的 `PgRuntime`：设置 `DATABASE_URL` 时由 MCP stdio 服务端建立连接，强制连接角色**非超级用户、无 `BYPASSRLS`、是策略目标角色成员**，任一不满足即**拒绝启动**（fails closed —— 这类角色会静默绕过 RLS，比连不上更危险）；事务内 `SET LOCAL ROLE` 切到策略角色，并以 `app.*` GUC 注入请求上下文，注入失败即中止事务。证据：**2026-10-25 在真实 PostgreSQL 16.15 上以应用角色 `omnilore_app` 的一次性人工验证**（非 CI），三条探针全部 PASS（未授权空间 0 行 / 授权后 1 行以排除空表假阳性 / 连接角色 `superuser=false, bypassrls=false`），超级用户 `omnilore_migrator` 连接被拒绝启动；输出见第 6.1 节，可复跑脚本 `tools/verify_rls_app_role.py`（需真实 PG + 应用角色）。**离线自动化只有 5 条 mock 用例**（`tests/test_pg_runtime_wiring.py`：默认内存引擎、无 `DATABASE_URL` 时不接 PG、拒绝超用户 / BYPASSRLS 连接角色），**不连真实 PG**。**边界（必须一并读）**：该连接只做安全接入与启动自检，**业务数据层仍走内存 `RLSDatabaseEngine`** —— 本条**不**证明业务状态已持久化到 PostgreSQL，也**不**证明可多人共享；混合检索未接入运行时 |
+| 真实 PostgreSQL 集成 CI | `Tested-real` | 核心能力 / 其他宣称 | `make verify-rls-pg` | 已接入 Actions 的 `integration-rls` job（`pgvector/pgvector:0.8.0-pg16` service container + `pg_isready -U -d` 健康检查 + 零 Secret；exit 2「未验证」/ exit 3「结论为否」**逐码**转成 job 失败，无 `continue-on-error`）。**它已真实运行并连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`，3 条探针均 PASS），达到「连续 ≥2 次绿灯」的门槛，故由 `Implemented` 升 `Tested-real`。**边界**：该 job 只跑**独立 SQL 探针**（`tools/verify_rls_pg.py`），**不覆盖 CLI / MCP 业务运行时的接线**，也**不证明**业务数据已走 PostgreSQL |
+| PostgreSQL 安全连接层与 RLS 生效验证 | `Tested-real` | 核心能力 / 其他宣称 | `python tools/verify_rls_app_role.py` | `omnilore/pg_runtime.py` 的 `PgRuntime`：设置 `DATABASE_URL` 时由 MCP stdio 服务端建立连接，强制连接角色**非超级用户、无 `BYPASSRLS`、是策略目标角色成员**，任一不满足即**拒绝启动**（fails closed —— 这类角色会静默绕过 RLS，比连不上更危险）；事务内 `SET LOCAL ROLE` 切到策略角色，并以 `app.*` GUC 注入请求上下文，注入失败即中止事务。证据：**2026-10-25 / 2026-10-26 在真实 PostgreSQL 16.15 上以应用角色 `omnilore_app` 的两次一次性人工验证（两套独立环境）**（**非 CI**，验证脚本未接进 CI），三条探针全部 PASS（未授权空间 0 行 / 授权后 1 行以排除空表假阳性 / 连接角色 `superuser=false, bypassrls=false`），超级用户 `omnilore_migrator` 连接被拒绝启动；输出见第 6.1 节，可复跑脚本 `tools/verify_rls_app_role.py`（需真实 PG + 应用角色）。**离线自动化只有 5 条 mock 用例**（`tests/test_pg_runtime_wiring.py`：默认内存引擎、无 `DATABASE_URL` 时不接 PG、拒绝超用户 / BYPASSRLS 连接角色），**不连真实 PG**。**边界（必须一并读）**：该连接只做安全接入与启动自检，**业务数据层仍走内存 `RLSDatabaseEngine`** —— 本条**不**证明业务状态已持久化到 PostgreSQL，也**不**证明可多人共享；混合检索未接入运行时 |
 
 **当前统计（由测试守护，与 README / CHANGELOG 三处一致）：**
-`Implemented` 11 条 ｜ `Tested-real` 8 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
+`Implemented` 10 条 ｜ `Tested-real` 9 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
 
 ---
 
@@ -170,12 +180,17 @@ python tools/verify_rls_app_role.py   # 0=三条通过；2=未验证；3=已验�
 > 「真实 PostgreSQL RLS 策略与跨空间读拦截」与「PostgreSQL 安全连接层与 RLS 生效验证」，
 > 证据分别见第 6 节与第 6.1 节）。这是已知边界，不是遗漏。
 
-**同一组探针也跑在 CI 里**：`.github/workflows/ci.yml` 的 `integration-rls` job 使用
-`pgvector/pgvector:0.8.0-pg16` service container（`pg_isready -U postgres -d omnilore_verify`
+**同一组探针也跑在 CI 里，而且已经真实绿灯**：`.github/workflows/ci.yml` 的 `integration-rls`
+job 使用 `pgvector/pgvector:0.8.0-pg16` service container（`pg_isready -U postgres -d omnilore_verify`
 健康检查，零 Secret），执行的就是 `python tools/verify_rls_pg.py`（与 `make verify-rls-pg`
 同一条命令）。它把 exit 2（未验证）/ exit 3（结论为否）**逐码**转成 job 失败，
 不设 `continue-on-error` —— 因此「没跑起来」不会被伪装成绿灯。
-该 job **尚未经过首次真实运行验证**，所以本页不据此抬高任何标注。
+**运行结果：自 2026-10-26 起已连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`，
+均为 3 条探针 PASS），达到本页「连续 ≥2 次绿灯」的门槛。
+**它覆盖什么 / 不覆盖什么**：只覆盖 `sql/001` 的 SQL 策略在真实 PG 上是否生效；
+**不覆盖** CLI / MCP 业务运行时是否接入 PostgreSQL，也**不覆盖** profile 维度、写侧策略、
+组织树继承与撤销链路 —— 因此除了「真实 PostgreSQL RLS 策略与跨空间读拦截」与本条
+「真实 PostgreSQL 集成 CI」，其余条目一律不许跟涨。
 
 ---
 
@@ -200,8 +215,8 @@ python tools/verify_rls_app_role.py   # 0=三条通过；2=未验证；3=已验�
 | 客户端 | `psql` 16.15 |
 | 命令 | `make verify-rls-pg`（脚本 `tools/verify_rls_pg.py`，目标库为**空库** `omnilore_verify`） |
 | 退出码 | `0`（三条探针全部 PASS） |
-| 性质 | **人工执行、一次性**；不是 CI 门禁，**不可**视为「持续证据」 |
-| 后续自动化 | `.github/workflows/ci.yml` 的 `integration-rls` job 已接入同三条探针（**待首次绿灯**；绿灯后才具备持续取证） |
+| 性质 | 起点是**人工执行、一次性**（2026-10-24）；**现在已由 CI 持续验证** —— 见下方「后续自动化」 |
+| 后续自动化 | `.github/workflows/ci.yml` 的 `integration-rls` job 已接入同三条探针，并**已于 2026-10-26 真实运行、连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`）。**边界**：该 job 只跑独立 SQL 探针，**不等于业务运行时已接入 PostgreSQL / 数据已持久化** |
 
 探针完整输出（内联自当时的运行记录，非事后补写）：
 
@@ -219,6 +234,10 @@ python tools/verify_rls_app_role.py   # 0=三条通过；2=未验证；3=已验�
 VERIFY_EXIT=0
 ```
 
+> 上面是 **2026-10-24 当时的原文输出**（未作改写）。其中「要长期生效需接入自动化集成 CI」
+> 一句**已于 2026-10-26 成为现实**：同三条探针现由 `integration-rls` job 在 CI 上复跑，
+> 已连续 2 次绿灯（见上文「CI 复跑记录」）。脚本当前的收尾提示也已同步更新。
+
 三条探针各自证明了什么（以及**没有**证明什么）：
 
 | 探针 | 证明了 | 没有证明 |
@@ -230,6 +249,12 @@ VERIFY_EXIT=0
 因此升级范围严格限定为「**策略挂载 + 跨空间读拦截**」这一条。
 `四维权限交集`、`Profile 硬性隔离`、`撤销即时失效`、`组织树只读继承` 等条目**没有**被
 这三条探针覆盖，维持 `Simulated`。
+
+**CI 复跑记录（2026-10-26）**：上面这组探针已由 `.github/workflows/ci.yml` 的
+`integration-rls` job 在 GitHub Actions 上真实运行 **2 次**（Run #1 `8d0ecc3`、Run #2
+`5d513fe`），两次都是 3 条 `[PASS]`、exit 0，与本地输出一致。
+请把「CI 绿灯」读成「这三条探针在真实 PostgreSQL 上**可复现地**通过」，
+**不要**读成「业务运行时已接入 PostgreSQL / 数据已持久化」。
 
 复现提示（踩过的两个坑，已写进脚本与 compose）：
 1. 镜像 tag 必须是 `<pgvector版本>-pg<PG主版本>`（如 `0.8.0-pg16`）；写成 `pg16-v0.8.0` 会 pull 失败。
@@ -251,7 +276,7 @@ VERIFY_EXIT=0
 | 命令 | `python tools/verify_rls_app_role.py` |
 | 退出码 | `0`（三条探针全部 PASS） |
 | 性质 | **人工执行、一次性**；**不是 CI 门禁**，不可视为「持续证据」 |
-| 后续自动化 | **尚未**接入 CI；本条不因 `integration-rls` job 而自动升级 |
+| 后续自动化 | **尚未**接入 CI；本条不因 `integration-rls` job 绿灯而自动升级（后者只跑独立 SQL 探针，与本条验证的不是同一条路径） |
 
 探针完整输出：
 

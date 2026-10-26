@@ -59,12 +59,15 @@
 > **`Simulated` 的含义**：证据来自与 PostgreSQL RLS **同构的内存仿真引擎**，
 > 真实 PostgreSQL 上没有 CI 证据。详见 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)。
 >
-> **两条例外**（都是 `Tested-real`，且都是**人工一次性证据、不是 CI 门禁**）：
-> ①「真实 PostgreSQL RLS 策略与跨空间读拦截」—— 依据 2026-10-24 在真实 PostgreSQL 16.15 上的
-> 人工验证（3 条探针 PASS）；②「PostgreSQL 安全连接层与 RLS 生效验证」—— 依据 2026-10-25 在
-> 真实 PostgreSQL 16.15 上以应用角色 `omnilore_app` 走运行时连接层的人工验证（3 条探针 PASS）。
+> **两条例外**（都是 `Tested-real`，但**证据性质不同**）：
+> ①「真实 PostgreSQL RLS 策略与跨空间读拦截」—— 起自 2026-10-24 在真实 PostgreSQL 16.15 上的
+> 人工验证（3 条探针 PASS），**现已由 CI 的 `integration-rls` job 持续验证**（自 2026-10-26 起
+> 连续 2 次绿灯）；②「PostgreSQL 安全连接层与 RLS 生效验证」—— 依据 2026-10-25 / 2026-10-26 在
+> 真实 PostgreSQL 16.15 上以应用角色 `omnilore_app` 走运行时连接层的**人工一次性**验证
+> （3 条探针 PASS，**非 CI**）。
 > 完整输出与「它们没有证明什么」见
 > [`docs/FEATURE_STATUS.md` 第 6 / 6.1 节](FEATURE_STATUS.md)。
+> **两条共同的边界**：都不等于「业务运行时已接入 PostgreSQL / 数据已持久化」；
 > **② 尤其不该被读成「业务数据已持久化」** —— 业务读写仍走内存引擎。
 
 ---
@@ -87,16 +90,20 @@
    真实 PG 当前只用于独立策略探针与安全连接自检。
    **把「连上了 + RLS 验证过」读成「数据已持久化 / 可多人共享」是误读。**
 
-3. **真实 PostgreSQL RLS 仍无 CI 证据，只有人工一次性验证（两次，均非 CI）。**
-   ① 2026-10-24 在真实 PostgreSQL 16.15 上人工跑通三条探针（7 张核心表 `rowsecurity=true` /
-   未授权时跨空间行不可见 / 授权后同一行可见）；② 2026-10-25 在同一版本真实 PG 上以**应用角色**
-   `omnilore_app` 走运行时连接层跑通三条探针（未授权 0 行 / 授权后可见 / 连接角色非超用户
-   无 `BYPASSRLS`），且超级用户连接被拒绝启动。两者共同证明策略与安全连接路径在真实 PG 上确实生效。
-   但请注意它们的边界：自动化 `integration-rls` job 已写入 CI 配置却**尚未首次运行**；探针**未覆盖**
+3. **真实 PostgreSQL 上只有两条例外证据，其中一条由 CI 持续验证、另一条仍是一次性人工。**
+   ①「真实 PostgreSQL RLS 策略与跨空间读拦截」：2026-10-24 在真实 PostgreSQL 16.15 上人工跑通
+   三条探针（7 张核心表 `rowsecurity=true` / 未授权时跨空间行不可见 / 授权后同一行可见），
+   **现已由 CI 的 `integration-rls` job 每次 push 复跑并连续 2 次绿灯**（自 2026-10-26 起）；
+   ②「PostgreSQL 安全连接层与 RLS 生效验证」：2026-10-25 / 2026-10-26 在同一版本真实 PG 上以
+   **应用角色** `omnilore_app` 走运行时连接层跑通三条探针（未授权 0 行 / 授权后可见 / 连接角色
+   非超用户无 `BYPASSRLS`），且超级用户连接被拒绝启动 —— **② 仍是人工一次性、非 CI**。
+   两者共同证明策略与安全连接路径在真实 PG 上确实生效。
+   但请注意它们的边界：CI 绿灯**只覆盖 `sql/001` 的 SQL 策略本身**；探针**未覆盖**
    profile 维度、写入侧（`INSERT`/`UPDATE`/`DELETE`）策略、组织树继承、撤销链路，
    **也不覆盖业务读写到 PostgreSQL 的数据面迁移**（业务仍走内存引擎）。
    证据记录与「它没有证明什么」见 [`docs/FEATURE_STATUS.md` 第 6 / 6.1 节](FEATURE_STATUS.md)。
-   **不要**把它读成「RLS 已被持续验证」，更**不要**读成「数据已持久化」。
+   即使①有 CI 持续证据，也**不要**把它读成「业务运行时已接入 PostgreSQL」，更**不要**
+   读成「数据已持久化」。
 
 4. **不防本机恶意软件 / 有本机文件权限的攻击者。**
    token 以明文持久化在 `$OMNILORE_DATA_DIR/ops/bootstrap.json`；
