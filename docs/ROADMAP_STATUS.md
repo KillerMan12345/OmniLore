@@ -106,9 +106,18 @@
   注入失败即中止事务。未设置 `DATABASE_URL` 时行为与之前完全一致（仍内存引擎）。
 - 新建了安全应用角色 `omnilore_app`（`LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`，
   授予两个策略角色的成员资格），绕开了“`omnilore_gateway` 是 `NOLOGIN` 无法登录”的坑。
-- RLS 在这条连接上确实生效，已在真实 PostgreSQL 16.15 上以 `omnilore_app` 人工验证一次
-  （P-a 未授权 0 行 / P-b 授权后可见 / P-c 角色属性安全）；以超级用户 `omnilore_migrator`
-  连接会被拒绝启动。
+- RLS 在这条连接上确实生效，已在真实 PostgreSQL 16.15 上以 `omnilore_app` 人工验证**两次**
+  （2026-10-25 与 2026-10-26，两套独立环境）：P-a 未授权 0 行 / P-b 授权后可见（排除空表假阳性）
+  / P-c 角色属性安全；以超级用户连接会被拒绝启动（fails closed 生效）。第二次复现同时核对了
+  `sql/001` 建出的 **21 条策略**与 **7 张启用 RLS 的表**，并做了对照实验：本地 `bootstrap` +
+  `demo` 跑通后，容器里只有探针行、没有业务数据 —— 这正是不宣称持久化的实证。
+  两次均为人工一次性验证，**非 CI 持续证据**。
+- ⚠️ **排查中发现的一个配置隐患（未修，记录备查）**：`docker-compose.yml` 的
+  `POSTGRES_USER` 设为 `omnilore_migrator`，与 `sql/001` 里 `CREATE ROLE omnilore_migrator NOLOGIN`
+  **同名**。initdb 会先把它建成可登录的超级用户，而 `sql/001` 的 `DO $$ IF NOT EXISTS $$`
+  块随后**跳过创建**——结果是这个本应 `NOLOGIN` 的迁移/属主角色变成了一个**可登录的超级用户**。
+  当前有 `PgRuntime` 拒绝超用户连接作为兜底，但更干净的做法是让 compose 改用别的
+  `POSTGRES_USER`（例如 `postgres`），把 `omnilore_migrator` 留给 `sql/001` 按 `NOLOGIN` 创建。
 
 **仍是缺口：业务数据层**
 - `OmniLoreEngine`、CLI 与 MCP 服务端始终使用内存仿真引擎；业务读写**没有**走 `AsyncpgRepository`，
