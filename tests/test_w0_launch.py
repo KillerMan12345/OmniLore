@@ -147,18 +147,22 @@ class TestBootstrapIdempotency(unittest.TestCase):
             path: 被收紧的文件。
             unsupported_ok: 宿主明确不支持收紧时是否跳过 ACE 断言（读写断言仍然生效）。
         """
-        listing = subprocess.run(["icacls", str(path)], capture_output=True, check=False, timeout=30)
-        text = (listing.stdout or b"").decode("utf-8", "replace")
-        if os.name == "nt":
-            if unsupported_ok and not text.strip():
-                self.skipTest("宿主无法提供 icacls 输出，跳过 ACE 断言")
-            self.assertNotIn("NT AUTHORITY\\SYSTEM", text, "收紧后不应残留继承的 SYSTEM ACE")
-            self.assertNotIn("BUILTIN\\Administrators", text, "收紧后不应残留继承的 Administrators ACE")
-            self.assertNotIn("Everyone", text, "收紧后不应残留 Everyone ACE")
-            self.assertNotIn("BUILTIN\\Users", text, "收紧后不应残留 BUILTIN\\Users ACE")
-        else:
+        # 注意：`icacls` 是 Windows 专属命令。非 Windows 上**绝不能**调用它 ——
+        # 否则 Linux/macOS 会因 FileNotFoundError 直接报错，而不是得出权限结论。
+        # （本项目长期只在 Windows 上开发，直到 CI 引入 ubuntu / arm64 才暴露这一点：
+        #   曾经这里是无条件调用 icacls、再按 os.name 分支，导致 5 个 Linux job 全红。）
+        if os.name != "nt":
             mode = stat.S_IMODE(path.stat().st_mode)
             self.assertEqual(mode & 0o777, 0o600, f"POSIX 下应为 0600，实为 {oct(mode)}")
+            return
+        listing = subprocess.run(["icacls", str(path)], capture_output=True, check=False, timeout=30)
+        text = (listing.stdout or b"").decode("utf-8", "replace")
+        if unsupported_ok and not text.strip():
+            self.skipTest("宿主无法提供 icacls 输出，跳过 ACE 断言")
+        self.assertNotIn("NT AUTHORITY\\SYSTEM", text, "收紧后不应残留继承的 SYSTEM ACE")
+        self.assertNotIn("BUILTIN\\Administrators", text, "收紧后不应残留继承的 Administrators ACE")
+        self.assertNotIn("Everyone", text, "收紧后不应残留 Everyone ACE")
+        self.assertNotIn("BUILTIN\\Users", text, "收紧后不应残留 BUILTIN\\Users ACE")
 
     def test_bootstrap_state_file_is_tightened_end_to_end(self) -> None:
         """端到端守卫：bootstrap 真正产出的 token 文件必须是被收紧过的。
