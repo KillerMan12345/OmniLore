@@ -2415,6 +2415,7 @@ class OmniLoreEngine:
         include_history: bool = False,
         top_k: int = 5,
         token_budget: Optional[int] = 1500,
+        verify_citations: bool = True,
     ) -> Dict[str, Any]:
         scope = self.auth.resolve_scope(raw_token)
         # A-6 zero-key degradation + QA P1-2 resilience: with no usable embedding
@@ -2535,6 +2536,22 @@ class OmniLoreEngine:
                 "has_sufficient_evidence": bool,
             },
         )
+        # ------------------------------------------------------------------
+        # Anti-hallucination post-processing (default ON).
+        # MUST run on the *un-folded* top_chunks, before budget governance may
+        # fold / truncate chunk_text. Otherwise a folded snippet would produce
+        # false "UNVERIFIED_OR_MISQUOTED" results for perfectly grounded claims.
+        # This block only ADDS reporting fields; it never rewrites the answer,
+        # `has_sufficient_evidence`, or the two orthogonal degradation axes.
+        # ------------------------------------------------------------------
+        from .citation_guard import build_citation_verifications
+        guard_res = build_citation_verifications(
+            str(synth.get("answer", "")),
+            synth.get("citations", []),
+            top_chunks,
+            enabled=verify_citations,
+        )
+
         from .context_budget import govern_search_results
         gov_res = govern_search_results(top_chunks, token_budget=token_budget)
         governed_top_chunks = gov_res["results"]
@@ -2558,6 +2575,7 @@ class OmniLoreEngine:
             "synthesis_degraded": bool(synth_note),
             "synthesis_note": synth_note,
             "budget_governance": gov_res["budget_governance"],
+            **guard_res,
         }
 
     async def get_asset_chunk(
@@ -3012,6 +3030,7 @@ class OmniLoreMCPGateway:
         code_symbol: Optional[str] = None,
         include_history: bool = False,
         token_budget: Optional[int] = 1500,
+        verify_citations: bool = True,
     ) -> Dict[str, Any]:
         return await self.engine.search_knowledge(
             raw_token,
@@ -3021,6 +3040,7 @@ class OmniLoreMCPGateway:
             code_symbol_filter=code_symbol,
             include_history=include_history,
             token_budget=token_budget,
+            verify_citations=verify_citations,
         )
 
     async def get_asset_chunk(

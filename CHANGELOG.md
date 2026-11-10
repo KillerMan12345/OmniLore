@@ -61,6 +61,15 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   `documents` / `document_series` / `assets` / `document_assets` 回填进 `engine.db._state`，
   仅当内存引擎且 `documents` 为空时生效，PG 后端与同进程已有数据不覆盖；索引只负责定位，
   正文仍由 `storage.read_wiki_by_record` 从磁盘真实字节读取。
+- **答案合成自动引用巡检（Citation Guard）**：`omnilore/citation_guard.py` 让 `search_knowledge`
+  默认对合成答案抽取引用片段，逐条与本次检索返回的**未折叠**证据块比对，返回
+  `citation_verifications` / `citation_grounding` / `unverified_citations_detected`；
+  可识别捏造引用与张冠李戴，可用 `verify_citations=False` 关闭。只新增报告字段，
+  不改写答案、`has_sufficient_evidence` 或检索/合成两条正交降级轴。
+- **真实 PDF 解析与入库验证**：`tests/test_pdf_ingestion_real.py` 动态构造规范的两页 PDF
+  字节流（含 xref 表与 Type1 字体），覆盖 `pdfplumber` 与 `pypdf` 双路径文本提取、
+  页码切块、真实入库以及 CAS SHA-256 逐字节对账（篡改期望摘要即 `ASSET_CORRUPTED`）。
+  「多格式入库」维持 `Implemented`，按 CI 连续 ≥2 次绿灯的门槛暂不升级。
 - **`sql/002_omnilore_bootstrap_seed.sql`**：PostgreSQL 模式下的最小 seed。
 
 **诚实标注与贡献入口**
@@ -72,7 +81,7 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **R-13 能力状态矩阵（四态标注）**：新增 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)，
   README 里的**每一条能力**都标注 `Implemented` / `Tested-real` / `Simulated` / `Planned`
   四态之一，逐条对应，并由测试守护「README ↔ 矩阵 ↔ CHANGELOG 三处一致」。
-  当前 **35 条**能力标注：`Implemented` 12 条、`Tested-real` 10 条、`Simulated` 12 条、`Planned` 1 条
+  当前 **36 条**能力标注：`Implemented` 13 条、`Tested-real` 10 条、`Simulated` 12 条、`Planned` 1 条
   （`真实 PostgreSQL 集成 CI` 在 CI 连续 2 次绿灯后由 `Implemented` 升为 `Tested-real`）。
   ⚠️ 其中「混合检索（BM25 + 向量 + 代码符号）」标 `Simulated` —— `hybrid`（1024 维向量）
   路径在 CI 里是 monkeypatch 桩（无真实网络调用），只有 `keyword_only` 真实执行。
@@ -237,11 +246,11 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
     **但边界不变**：它只证明 `sql/001` 的 SQL 策略在真实 PG 上生效，
     **不等于业务运行时已接入 PostgreSQL / 数据已持久化**。
     `ARM64 架构验证` 当时因只有 1 次绿灯维持 `Implemented`；此后累计 3 次绿灯，已按同一门槛升为 `Tested-real`。
-- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 171 个测试 +
+- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 186 个测试 +
   ruff + DCO 校验 + 静态红线守卫，全程不使用任何 Secret；**另有一个独立的 `integration-rls`
   job 需要真实 PostgreSQL service container**（见上），它是全仓唯一需要外部服务的门禁，
   同样不使用任何 Secret。
-- **测试套件**：171 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、37 项首发专项、
+- **测试套件**：186 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、37 项首发专项、
   61 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
   证据包导出与篡改测试 / 21 条 RLS 策略注释守卫 / 两条真实 PG 例外的证据性质守卫）、
   30 项 W6 专项
@@ -251,8 +260,12 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   16 项架构理念落地专项（`test_context_budget.py` 5 项、`test_citation_grounding.py` 4 项、
   `test_evolution_chain.py` 3 项、`test_tiered_mcp_tooling.py` 2 项、`test_storage_contract.py` 2 项）、
   3 项 MCP 扩展动作专项（`test_mcp_dag_and_plan_actions.py`：`EVOLUTION_DAG` 资产 /
-  `INSPECT_PLAN` 变更预审 / `VERIFY_CITATION` 引用核验）。
-  159 项业务用例跑在 `RLSDatabaseEngine` **内存仿真引擎**上（另有 2 条守卫只做静态文本
+  `INSPECT_PLAN` 变更预审 / `VERIFY_CITATION` 引用核验）、
+  10 项答案引用巡检专项（`test_citation_guard.py`：声明抽取与去重 / 捏造引用告警 /
+  张冠李戴检测 / 可显式关闭 / 折叠预算不产生假阴性）、
+  5 项真实 PDF 入库专项（`test_pdf_ingestion_real.py`：规范真实 PDF 字节流 /
+  `pdfplumber` → `pypdf` 回退 / 页码切块 / 入库与 CAS SHA-256 对账）。
+  绝大多数业务用例跑在 `RLSDatabaseEngine` **内存仿真引擎**上（另有 2 条守卫只做静态文本
   判定、不碰引擎），与 PostgreSQL RLS 同构但
   **不是真实 PostgreSQL**；新增的 5 项接线用例同样离线（mock），不产生真实 PG 证据。
 - **`docs/HANDOVER.md`（交接文档）**：面向接手本项目的下一个 agent 或新贡献者，

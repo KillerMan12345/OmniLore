@@ -302,6 +302,7 @@ omnilore/
 │   ├── embedding_provider.py                         # **R-04b** 向量来源抽象（dashscope / openai 兼容 / none）
 │   ├── runtime_index.py                              # **R-05m** 运行时索引（audit-bundle 跨进程的派生物）
 │   ├── parsers.py                                    # 多格式解析器（纯函数，好入手）
+│   ├── citation_guard.py                             # 新增：答案合成自动引用巡检（默认开启，Implemented，离线验证）
 │   ├── ops_manager.py                                # 备份/恢复/索引重建/一致性对账
 │   ├── daemons.py                                    # Outbox 恢复与 Obsidian 监听守护
 │   ├── http_worker_api.py                            # 供 n8n 调用的内部 HTTP 网关
@@ -310,7 +311,7 @@ omnilore/
 │   ├── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
 │   ├── verify_rls_app_role.py                        # 用**应用角色**在真实 PG 上复现 RLS 三条（需真实 PG + 应用角色）
 │   └── verify_audit_bundle.py                        # 证据包探针：改 1 字节必须 mismatch + exit 3
-└── tests/                                            # 端到端验收测试，共 171 个用例（0 skip）
+└── tests/                                            # 端到端验收测试，共 186 个用例（0 skip）
     ├── _platform_support.py                          # 新增：宿主能力探测（symlink → junction 回退）
     ├── test_omnilore_phase0_acceptance.py           # Phase 0/1 专项（安全/RLS/幂等/恢复/模型门禁）10 项
     ├── test_full_omnilore_suite.py                  # Phase 0~3 + Ops 综合验收 9 项
@@ -323,7 +324,9 @@ omnilore/
     ├── test_tiered_mcp_tooling.py                   # 理念四：MCP 工具能力分层治理（Query/Governance）2 项
     ├── test_storage_contract.py                     # 理念五：最小存储后端契约与适配层 2 项
     ├── test_evolution_chain.py                      # 理念三：知识因果演化链与 MRP 变更提议 3 项
-    └── test_mcp_dag_and_plan_actions.py              # 新增：MCP 扩展动作（EVOLUTION_DAG / INSPECT_PLAN / VERIFY_CITATION）3 项（Implemented，离线验证）
+    ├── test_mcp_dag_and_plan_actions.py              # 新增：MCP 扩展动作（EVOLUTION_DAG / INSPECT_PLAN / VERIFY_CITATION）3 项（Implemented，离线验证）
+    ├── test_citation_guard.py                        # 答案合成自动引用巡检、捏造引用告警、折叠预算不误判 10 项（Implemented，离线验证）
+    └── test_pdf_ingestion_real.py                    # 真实 PDF 字节流、双解析库回退、入库与 CAS 哈希对账 5 项（Implemented，离线验证；真实第三方解析库）
 ```
 
 ---
@@ -335,7 +338,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 # 等价：make verify
 ```
 
-**171 个测试用例**，全部离线运行，不需要数据库或 API Key：
+**186 个测试用例**，全部离线运行，不需要数据库或 API Key：
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---|---|
@@ -351,8 +354,10 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | `test_storage_contract.py` | 2 项 | 统一 StorageBackend Protocol 契约与引擎适配层（Implemented，离线验证） |
 | `test_evolution_chain.py` | 3 项 | CausalEvolutionDAG 因果指针跟踪与 MRP 知识变更提议检查（Implemented，离线验证） |
 | `test_mcp_dag_and_plan_actions.py` | 3 项 | EVOLUTION_DAG 资产、INSPECT_PLAN 变更预审、VERIFY_CITATION 引用核验（Implemented，离线验证） |
+| `test_citation_guard.py` | 10 项 | 答案合成默认自动引用巡检、张冠李戴检测、可显式关闭、折叠预算不产生假阴性（Implemented，离线验证） |
+| `test_pdf_ingestion_real.py` | 5 项 | 构造规范真实 PDF 字节流（2 页 + xref），验证 `pdfplumber` → `pypdf` 回退、入库与 CAS SHA-256 对账（Implemented，离线验证；真实第三方解析库） |
 
-> ⚠️ **这 171 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
+> ⚠️ **这 186 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
 > 它与 PostgreSQL RLS **同构**，但**不是真实 PostgreSQL** —— 所以它们证明的是**逻辑正确性**，
 > 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS 相关能力一律标注 `Simulated` ——
 > **两条例外**（都在真实 PostgreSQL 16.15 上取过证，但**证据性质不同**）：
@@ -373,7 +378,7 @@ OmniLore 支持 **x86_64 与 arm64** 两种 CPU 架构，验证方式不同，�
 | 架构 | 状态 | 验证方式 |
 |---|---|---|
 | `x86_64`（Linux / Windows；macOS Intel 为兼容目标） | `Tested-real`（Linux / Windows） | CI 离线矩阵为 `ubuntu-latest` × `windows-latest` × Python 3.11/3.12；当前没有 macOS job，**不得把 macOS 写成已验证** |
-| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Tested-real` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 171 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。边界：仅覆盖离线套件 + `ruff` + 零密钥冒烟，不覆盖真实 PG 业务数据面 |
+| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Tested-real` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 186 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。边界：仅覆盖离线套件 + `ruff` + 零密钥冒烟，不覆盖真实 PG 业务数据面 |
 
 > 为什么 arm64 单独一个 job 而不是并进矩阵：`integration-rls` 刻意留在 x86（真实 PostgreSQL
 > service container）。在 arm64 上同时引入「新架构 + 新服务容器」两个变量，一旦红了分不清是谁的锅。
@@ -420,7 +425,7 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 > | `Planned` | 尚未实现，或仅有模板、未经过自动化验证 |
 >
 > **当前统计（三处一致，由测试守护）：**
-> `Implemented` 12 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **35 条**。
+> `Implemented` 13 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **36 条**。
 >
 > **测试跑在什么上面（重要）**：本项目的绝大多数业务用例都跑在
 > `omnilore.engine.RLSDatabaseEngine`（**内存仿真引擎**）上 —— 它与 PostgreSQL RLS
@@ -453,8 +458,9 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 
 ### Phase 1 — 入库、版本、检索
 
-- **[Implemented]** **多格式入库**：Markdown、代码、PDF（实现使用 `pdfplumber` / `pypdf` 提取页码与表格）、图像（自动化用例真实调用 `Pillow`）。**PDF 分支当前没有自动化用例，也没有真实 PDF 样本证据**，因此整体不标 `Tested-real`。
+- **[Implemented]** **多格式入库**：Markdown、代码、PDF（实现使用 `pdfplumber` / `pypdf` 提取页码与表格）、图像（自动化用例真实调用 `Pillow`）。`tests/test_pdf_ingestion_real.py` 现会动态构造**规范真实 PDF 字节流**（2 页、含 xref 表与 Type1 字体），走 `pdfplumber` → `pypdf` 双路径解析、真实入库并与 CAS SHA-256 对账。**边界**：这是离线自动化用例 + 真实第三方解析库，不是真实外部服务；按本项目「CI 类条目升 `Tested-real` 需连续 ≥2 次绿灯」的门槛，暂维持 `Implemented`。
 - **[Simulated]** **混合检索（BM25 + 向量 + 代码符号）**：`keyword_only` 路径真实执行；**`hybrid`（1024 维向量）路径在 CI 里是 monkeypatch 桩，没有真实网络调用**，故整体标 `Simulated`。
+- **[Implemented]** **答案合成自动引用巡检（Citation Guard）**：`search_knowledge` 默认对合成答案自动抽取引用片段，逐条与本次检索返回的**未折叠**证据块比对，输出 `citation_verifications` 与 `unverified_citations_detected` 告警；可检测捏造引用与张冠李戴（声明 doc_id 与最佳匹配不符）。仅新增报告字段，**不改写答案**、不改动 `has_sufficient_evidence` 与检索/合成两条正交降级轴；可用 `verify_citations=False` 显式关闭。**边界**：证据范围仅限本次检索命中块，不是全库或外部事实库，跑在内存仿真引擎上。
 - **[Implemented]** **AST 代码符号提取**：类名、方法名、REST 路由、`ADR-xxx`，支持按 `code_symbol` 过滤。
 - **[Simulated]** **两阶段零停机版本控制**：新建 / `REPLACE_VERSION` / `SUPPLEMENT_DOC` / `REVERT_VERSION`。
 - **[Simulated]** **九类审核动作**：`APPROVE_REVIEW`、`RECLASSIFY`、`SPLIT_DOCUMENT`、`FIX_EXTRACTED_FIELD`、`REVERT_VERSION`、`PROMOTE_COPY`（含脱敏预览）、`CANCEL_TASK`，以及新增的 `INSPECT_PLAN`（变更预审）、`VERIFY_CITATION`（引用核验）。后两项各有进程内自动化用例，但整组治理动作仍只跑在内存仿真引擎上，**不标 `Tested-real`**。

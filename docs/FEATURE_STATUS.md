@@ -55,7 +55,7 @@
 - 它没有真实的 MVCC、锁、事务隔离级别与 `pgvector` 索引行为；
 - 进程退出后结构化状态清空（磁盘上的原始资产与 Markdown 知识页保留）。
 
-所以：**「171 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已验证」。**
+所以：**「186 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已验证」。**
 其中绝大多数业务用例跑在内存仿真引擎上，少数几条守卫只做静态文本/配置判定（不碰引擎，
 例如 `make` 目标存在性、仓库 LF、compose 启动超用户角色名），
 另有 5 个 `test_pg_runtime_wiring.py` 用例用
@@ -116,7 +116,7 @@ exit 2/3 都会让 job 变红），**并已于 2026-10-26 连续 2 次真实绿�
 | 撤销即时失效 | `Simulated` | 核心能力 / Phase 0 | `make verify-rls` | `< 1ms` 为进程内缓存实测，非 PG 侧实测；PG 探针不涉及撤销链路，故不升级 |
 | 文件网关路径防御 | `Tested-real` | 核心能力 / Phase 0 | `make verify-paths` | 真实文件系统（symlink / Windows junction 回退）；已有 Linux / Windows 证据，当前没有 macOS CI，不宣称 macOS 已实跑 |
 | 真实 PostgreSQL RLS 策略与跨空间读拦截 | `Tested-real` | 核心能力 / Phase 0 | `make verify-rls-pg` | 证据性质已由「2026-10-24 一次性人工验证」升级为 **CI 持续验证**：`.github/workflows/ci.yml` 的 `integration-rls` job 每次 push 都在干净的真实 PostgreSQL 16 上重跑同 3 条探针（7 张核心表 `rowsecurity=true` / 跨空间行未授权不可见 / 授权后同一行可见），**自 2026-10-26 起已连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`）。**边界（必须一并读）**：CI 绿灯证明的是 `sql/001` 的 **SQL 策略本身**在真实 PG 上生效，**不等于 CLI / MCP 业务运行时已接入 PostgreSQL**，也**不等于**结构化状态已持久化 —— 业务读写仍走内存 `RLSDatabaseEngine`（见第 2.1 节）。「21 条策略注释」补课（R-08b）已落地：每条策略上方四段注释（保护什么 / 依赖维度 / 防什么 / 不覆盖什么），且策略逻辑被冻结（`TestRlsPolicyComments` 摘要不符即红） |
-| 多格式入库 | `Implemented` | 核心能力 / Phase 1 | `make verify-parsers` | Markdown / 代码解析与真实 `Pillow` PNG 入库有自动化用例；PDF 分支实现了 `pdfplumber` → `pypdf` 回退，但当前测试套件**没有构造或入库真实 PDF**，因此不标 `Tested-real` |
+| 多格式入库 | `Implemented` | 核心能力 / Phase 1 | `make verify-parsers` | Markdown / 代码解析与真实 `Pillow` PNG 入库有自动化用例；`tests/test_pdf_ingestion_real.py` 现动态构造**规范真实 PDF 字节流**（2 页、含 xref 表与 Type1 字体），验证 `pdfplumber` 与 `pypdf` 双路径真实解析、页码、真实入库及 CAS SHA-256 逐字节对账（篡改期望摘要即 `ASSET_CORRUPTED`）。**边界**：证据是离线自动化用例 + 真实第三方解析库，不是真实外部服务；按「CI 类条目升 `Tested-real` 需连续 ≥2 次绿灯」的门槛，暂维持 `Implemented` |
 | 混合检索（BM25 + 向量 + 代码符号） | `Simulated` | 核心能力 / Phase 1 | `make verify-search` | ⚠️ `hybrid` 路径在 CI 里是 **monkeypatch 桩**（无真实网络调用、无真实 1024 维向量）；`keyword_only` 路径才是真实执行的 |
 | AST 代码符号提取 | `Implemented` | 核心能力 / Phase 1 | `make verify-parsers` | 纯函数，无外部依赖 |
 | 两阶段零停机版本控制 | `Simulated` | 核心能力 / Phase 1 | `make verify-rls` | 版本切换的状态机在内存引擎上验证 |
@@ -145,9 +145,10 @@ exit 2/3 都会让 job 变红），**并已于 2026-10-26 连续 2 次真实绿�
 | 知识版本因果演化链（EVOLUTION_DAG 资产） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `get_document_asset(asset_type="EVOLUTION_DAG")` 由 `documents` / `document_series` / `document_relations` 构建 `CausalEvolutionDAG`，返回 `doc_id` / `asset_type` / `series_id` / `total_versions` / `root_version_key` / `latest_version_key` / `ascii_graph` / `nodes`；读路径保留 `scope.can_read` 与 RLS `select_rows` 收口。**边界**：MCP 工具口径仍为 7 个（不是新工具），3 项进程内离线用例跑在内存仿真引擎上，不证明真实 PG 数据面已接通 |
 | MRP 变更预审与引用真实性核验（INSPECT_PLAN / VERIFY_CITATION） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `review_and_fix_knowledge` 新增两个治理动作，action 枚举由 `[a.value for a in ReviewAction]` 动态生成；`INSPECT_PLAN` 用 `dataclasses.asdict(plan)` 输出差异、风险评级与受影响小节（真实字段 `impacted_headings` + 对外别名 `sections_affected`），`VERIFY_CITATION` 把 `citation_text` 映射为 `claim_text` 并补齐 `status` / `overlap_score` / `best_snippet` 对外别名。**边界**：核验对象是本地 Wiki 正文与内存引擎中的文档，不是外部事实库；未证实引用在文本与 `--json` 两种模式下均以退出码 3 失败关闭（`status` 字段同时给出判定） |
 | 治理 CLI 跨进程状态回填（plan / history / verify-citation） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `omnilore plan` / `history` / `verify-citation` 支持文本与 `--json` 输出；`_hydrate_runtime_state()` 复用 `load_runtime_index` 把 `documents` / `document_series` / `assets` / `document_assets` 回填进内存引擎 `db._state`，仅在 `RLSDatabaseEngine` 且 `documents` 为空时生效，PG 后端与同进程已有数据不覆盖。**边界**：索引只是派生物、只负责定位，正文仍从磁盘真实字节读取；跨进程回填没有接入 CI 的真实子进程自动化用例，不能标 `Tested-real` |
+| 答案合成自动引用巡检（Citation Guard） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `omnilore/citation_guard.py` 在 `search_knowledge` 中默认对合成答案抽取引用片段（`citations` / `[ref: ...]` / 引号 / 无标注时按句兜底），逐条与本次检索返回的**未折叠**证据块比对，输出 `citation_verifications`、`citation_grounding` 汇总与 `unverified_citations_detected` 告警；能识别捏造引用与张冠李戴（声明 doc_id 与最佳匹配不符）。**边界**：只新增报告字段，不改写答案、`has_sufficient_evidence` 或两条正交降级轴；证据范围仅限本次命中块，不是全库或外部事实库；`verify_citations=False` 可显式关闭；10 项离线用例跑在内存仿真引擎上，不证明真实 PG 数据面 |
 
 **当前统计（由测试守护，与 README / CHANGELOG 三处一致）：**
-`Implemented` 12 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **35 条**。
+`Implemented` 13 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **36 条**。
 
 ---
 

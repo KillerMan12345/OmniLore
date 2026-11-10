@@ -33,8 +33,9 @@ MCP_TOOL_DEFINITIONS = [
         "description": (
             "Authorized retrieval over current knowledge versions: hybrid search (BM25 + 1024d vector + code "
             "symbols) when DASHSCOPE_API_KEY is configured; automatically degrades to BM25/keyword-only when it "
-            "is not. Responses carry `retrieval_mode` (`hybrid`|`keyword_only`), `degraded_reason`, and "
-            "`budget_governance` token allocation telemetry."
+            "is not. Responses carry `retrieval_mode` (`hybrid`|`keyword_only`), `degraded_reason`, "
+            "`budget_governance` token allocation telemetry, and a default-on `citation_verifications` "
+            "grounding report (`unverified_citations_detected` warns about ungrounded quotes)."
         ),
         "inputSchema": {
             "type": "object",
@@ -50,6 +51,11 @@ MCP_TOOL_DEFINITIONS = [
                     "type": "integer",
                     "default": 1500,
                     "description": "Max token budget for returned chunks. Set to 0 or negative for unconstrained full text.",
+                },
+                "verify_citations": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Ground synthesized claims against the un-folded retrieved chunks and report unverified citations. Disable only for performance-sensitive read-only calls.",
                 },
             },
         },
@@ -240,6 +246,7 @@ class MCPJsonRpcServer:
                 code_symbol=args.get("code_symbol"),
                 include_history=bool(args.get("include_history", False)),
                 token_budget=args.get("token_budget", 1500),
+                verify_citations=bool(args.get("verify_citations", True)),
             )
         if tool_name == "get_document_asset":
             res = await self.gateway.get_document_asset(
