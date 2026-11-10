@@ -661,7 +661,20 @@ class TestHonestFeatureStatus(unittest.TestCase):
         ROADMAP 原本不在守卫范围内，于是它悄悄写着「`Implemented` 11 条、`Tested-real` 8 条」
         （实际 10 / 9）而无人察觉 —— 这是**已经公开**的错误口径。缺口补上后，
         任何一处再漂移都会立刻变红。
+
+        同时钉住 CHANGELOG 的形状：维护者明确要求「这就是第一版，不要过程记录」，
+        只允许一个版本段 `[v0.3.0-alpha]`，禁止新建 `[Unreleased]` 或分轮标记。
+        曾有一次增量交付误建 `[Unreleased]` 段而无人拦截，故补此断言。
         """
+        version_sections = re.findall(r"^## \[([^\]]+)\]", self.changelog, re.M)
+        self.assertEqual(
+            version_sections,
+            ["v0.3.0-alpha"],
+            f"CHANGELOG 必须只有一个版本段 [v0.3.0-alpha]，实际：{version_sections}",
+        )
+        self.assertNotIn("[Unreleased]", self.changelog)
+        self.assertNotIn("分轮", self.changelog)
+
         rows = self._matrix_rows()
         roadmap = _read(REPO_ROOT / "docs" / "ROADMAP_STATUS.md")
         for label, text in (

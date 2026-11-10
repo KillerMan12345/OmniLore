@@ -10,43 +10,6 @@
 
 ---
 
-## [Unreleased] — MCP 扩展动作与治理 CLI 增量
-
-> 本批次**不新增 MCP 工具**（工具口径恒为 7 个），能力全部挂到已有工具上；实现与用例都是
-> 离线内存引擎路径，不代表真实 PostgreSQL 业务数据面已接通。
-
-### Added（新增）
-
-- **`get_document_asset` 新增 `EVOLUTION_DAG` 资产类型**：由 `documents` / `document_series`
-  / `document_relations` 构建 `CausalEvolutionDAG`，返回 `doc_id` / `asset_type` /
-  `series_id` / `total_versions` / `root_version_key` / `latest_version_key` /
-  `ascii_graph` / `nodes`；读路径保留 `scope.can_read` 与 RLS `select_rows` 收口。
-  `mcp_stdio_server.py` 的 `asset_type` 枚举同步补上 `EVOLUTION_DAG`。
-- **`review_and_fix_knowledge` 新增两个治理动作**：`INSPECT_PLAN`（MRP 变更预审，用
-  `dataclasses.asdict(plan)` 输出 `unified_diff` / `risk_level` / `recommendation` /
-  `impacted_headings`，并保留对外别名 `sections_affected`）；`VERIFY_CITATION`（把 payload 的
-  `citation_text` 映射为 `claim_text`，返回真实字段 `verification_status` /
-  `similarity_score` / `matched_snippet` / `is_grounded` 及对外别名 `status` /
-  `overlap_score` / `best_snippet` / `claim_text`）。action 枚举由
-  `[a.value for a in ReviewAction]` 动态生成，自动包含两新动作；`payload` 补上字段说明。
-- **CLI 新增 `plan` / `history` / `verify-citation`**：均支持文本与 `--json` 输出；
-  `verify-citation` 对未证实引用在文本与 `--json` 两种模式下均以
-  `EXIT_INTEGRITY_NOT_VERIFIED`（退出码 3）失败关闭（报告里的 `status` 字段同时给出判定）。
-- **跨进程状态回填 `_hydrate_runtime_state()`**：默认内存引擎每个 CLI 进程都是全新实例，
-  故复用 `load_runtime_index` 把 `documents` / `document_series` / `assets` /
-  `document_assets` 回填进 `engine.db._state`；仅当 `isinstance(engine.db, RLSDatabaseEngine)`
-  且 `documents` 为空时生效，PG 后端与同进程已有数据不覆盖。索引只负责定位，正文仍由
-  `storage.read_wiki_by_record` 从磁盘真实字节读取。
-
-### Changed（口径同步）
-
-- 新增 `tests/test_mcp_dag_and_plan_actions.py` 3 项离线用例，全量套件同步为 **171 项**
-  （0 failure / 0 error / 0 skip）；README / `docs/FEATURE_STATUS.md` /
-  `docs/ROADMAP_STATUS.md` / `docs/HANDOVER.md` / `.github/workflows/ci.yml` / 本文件六处
-  数字与组成拆分同步；能力矩阵按四态标注补 3 条 `Implemented`，合计 35 条。
-
----
-
 ## [v0.3.0-alpha] — 首个开源版本
 
 OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**可审阅的 Obsidian Markdown 知识页**
@@ -83,6 +46,21 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **MRP 知识编译流与版本因果演化链（理念三）**：`omnilore/evolution_chain.py` 构建版本因果演化 DAG，挂载 `reverts_version_key` 与 `supersedes_version_keys`，合并前生成 `unified_diff` 并给出章节影响范围与风险评级（`LOW`/`MED`/`HIGH`）。
 - **MCP 工具分层治理（理念四）**：`omnilore/mcp_stdio_server.py` 将 7 个工具明确标记为 `query`（只读消费层）与 `governance`（写/审计治理层），`tools/list` 原生支持 `tier` 可选过滤，完全向后兼容。
 - **最小存储后端契约抽象（理念五）**：`omnilore/storage_contract.py` 统一定义 `StorageBackend` 运行时 Protocol 契约与 `StorageCapabilities` 能力自省，预留轻量化解耦插槽。
+- **版本因果演化链资产**：`get_document_asset(asset_type="EVOLUTION_DAG")` 由 `documents` /
+  `document_series` / `document_relations` 构建 `CausalEvolutionDAG`，返回 `total_versions` /
+  `root_version_key` / `latest_version_key` / `ascii_graph` / `nodes`；读路径保留
+  `scope.can_read` 与 RLS `select_rows` 收口。MCP 工具口径仍为 7 个，不新增工具。
+- **变更预审与引用真实性核验**：`review_and_fix_knowledge` 提供 `INSPECT_PLAN`（输出
+  `unified_diff` / `risk_level` / `recommendation` / `impacted_headings`，目标文档不存在时
+  fail-closed）与 `VERIFY_CITATION`（返回 `verification_status` / `similarity_score` /
+  `matched_snippet` / `is_grounded` 及对外别名）；action 枚举由 `ReviewAction` 动态生成。
+- **治理 CLI 子命令**：`omnilore plan` / `history` / `verify-citation` 均支持文本与
+  `--json` 输出；`verify-citation` 对未证实引用在两种模式下均以
+  `EXIT_INTEGRITY_NOT_VERIFIED`（退出码 3）失败关闭（报告里的 `status` 字段同时给出判定）。
+- **跨进程状态回填**：`_hydrate_runtime_state()` 复用 `load_runtime_index` 把
+  `documents` / `document_series` / `assets` / `document_assets` 回填进 `engine.db._state`，
+  仅当内存引擎且 `documents` 为空时生效，PG 后端与同进程已有数据不覆盖；索引只负责定位，
+  正文仍由 `storage.read_wiki_by_record` 从磁盘真实字节读取。
 - **`sql/002_omnilore_bootstrap_seed.sql`**：PostgreSQL 模式下的最小 seed。
 
 **诚实标注与贡献入口**
