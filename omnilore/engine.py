@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import copy
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 import hashlib
@@ -121,6 +121,8 @@ class ReviewAction(str, Enum):
     REVERT_VERSION = "REVERT_VERSION"
     PROMOTE_COPY = "PROMOTE_COPY"
     CANCEL_TASK = "CANCEL_TASK"
+    INSPECT_PLAN = "INSPECT_PLAN"
+    VERIFY_CITATION = "VERIFY_CITATION"
 
 
 VALID_CATEGORIES: Set[str] = {
@@ -3054,8 +3056,8 @@ class OmniLoreMCPGateway:
         if asset_type == "CHUNK":
             target_chunk = chunk_id or doc_id
             return await self.get_asset_chunk(raw_token, target_chunk)
-        if asset_type not in ("WIKI", "RAW_ASSET"):
-            raise OmniLoreError("INVALID_ASSET_TYPE", "asset_type must be 'WIKI', 'RAW_ASSET' or 'CHUNK'")
+        if asset_type not in ("WIKI", "RAW_ASSET", "EVOLUTION_DAG"):
+            raise OmniLoreError("INVALID_ASSET_TYPE", "asset_type must be 'WIKI', 'RAW_ASSET', 'CHUNK' or 'EVOLUTION_DAG'")
         if "/" in doc_id or "\\" in doc_id or ".." in doc_id:
             raise PermissionDeniedError("Client bare paths are prohibited in get_document_asset")
 
@@ -3065,6 +3067,93 @@ class OmniLoreMCPGateway:
             if not docs:
                 raise PermissionDeniedError("Resource not found or access denied")
             doc = docs[0]
+            if asset_type == "EVOLUTION_DAG":
+                from .evolution_chain import CausalEvolutionDAG
+
+                # 与 WIKI 分支保持一致的读权限校验：先显式检查 RLS 读权限，
+                # 后续所有查询仍经由 conn.select_rows（内建 RLS 过滤），不绕过授权边界。
+                if not scope.can_read(doc["space_id"], doc["category"]):
+                    raise PermissionDeniedError("Caller lacks permission to read target document")
+
+                # 版本信息存放在 documents 表行（每个不可变版本一行）与
+                # document_series 表（系列级 version_key / current_doc_id），
+                # 因果边存放在 document_relations 的 SUPERSEDES 关系里。
+                series_id = doc["series_id"]
+                series_rows = await conn.select_rows(
+                    "document_series", lambda s: s["series_id"] == series_id
+                )
+                version_docs = await conn.select_rows(
+                    "documents", lambda d: d.get("series_id") == series_id
+                )
+                version_docs.sort(key=lambda d: (d.get("created_at", ""), d["doc_id"]))
+                version_doc_ids = {d["doc_id"] for d in version_docs}
+
+                supersedes_relations = await conn.select_rows(
+                    "document_relations",
+                    lambda r: (
+                        r.get("relation_type") == "SUPERSEDES"
+                        and r.get("source_doc_id") in version_doc_ids
+                    ),
+                )
+                supersedes_by_source: Dict[str, List[str]] = {}
+                for relation in supersedes_relations:
+                    supersedes_by_source.setdefault(
+                        relation["source_doc_id"], []
+                    ).append(relation["target_doc_id"])
+                # document_relations 不落运行时索引；跨进程（CLI）读取时关系表为空，
+                # 退而从 doc_status 推断：被标记为 SUPERSEDED 的版本由其时间上的后继取代。
+                if not supersedes_by_source:
+                    for earlier, later in zip(version_docs, version_docs[1:]):
+                        if earlier.get("doc_status") == DocStatus.SUPERSEDED.value:
+                            supersedes_by_source.setdefault(
+                                later["doc_id"], []
+                            ).append(earlier["doc_id"])
+
+                dag = CausalEvolutionDAG(series_id=series_id)
+                for index, version_doc in enumerate(version_docs):
+                    node_key = version_doc["doc_id"]
+                    doc_status = version_doc.get("doc_status", "")
+                    reverts_version_key = (
+                        version_docs[index - 1]["doc_id"]
+                        if doc_status == DocStatus.REVERTED.value and index > 0
+                        else None
+                    )
+                    dag.add_version(
+                        version_key=node_key,
+                        version_label=version_doc.get("version_label", node_key),
+                        doc_id=node_key,
+                        file_hash=version_doc.get("file_hash", ""),
+                        committed_at=version_doc.get("created_at", ""),
+                        reverts_version_key=reverts_version_key,
+                        supersedes_version_keys=sorted(
+                            supersedes_by_source.get(node_key, [])
+                        ),
+                        diff_summary={"added": 0, "deleted": 0},
+                        summary_note=f"{doc_status} | {version_doc.get('title', '')}",
+                    )
+
+                # 只通过公开 API 读取 DAG：get_lineage() 返回 asdict 后的节点列表，
+                # render_ascii_lineage() 返回可读的 ASCII 谱图。
+                lineage = dag.get_lineage()
+                nodes = {node["version_key"]: node for node in lineage}
+                current_doc_id = series_rows[0].get("current_doc_id") if series_rows else None
+                root_version_key = lineage[0]["version_key"] if lineage else None
+                latest_version_key = (
+                    current_doc_id
+                    if current_doc_id in nodes
+                    else (lineage[-1]["version_key"] if lineage else None)
+                )
+                return {
+                    "doc_id": doc_id,
+                    "asset_type": "EVOLUTION_DAG",
+                    "series_id": series_id,
+                    "total_versions": len(version_docs),
+                    "root_version_key": root_version_key,
+                    "latest_version_key": latest_version_key,
+                    "ascii_graph": dag.render_ascii_lineage(),
+                    "nodes": nodes,
+                }
+
             if asset_type == "WIKI":
                 wiki_content = self.engine.storage.read_wiki_by_record(doc["space_id"], doc["wiki_rel_path"])
                 return {
@@ -3185,6 +3274,8 @@ class OmniLoreMCPGateway:
           5. REVERT_VERSION
           6. PROMOTE_COPY (supports redaction preview & confirmed copy)
           7. CANCEL_TASK
+          8. INSPECT_PLAN (MRP pre-merge change plan)
+          9. VERIFY_CITATION (anti-hallucination citation grounding)
         """
         if not isinstance(action, ReviewAction):
             raise OmniLoreError("INVALID_REVIEW_ACTION", f"Unsupported action: {action}")
@@ -3570,6 +3661,67 @@ class OmniLoreMCPGateway:
                     {"verification_status": "HUMAN_VERIFIED"},
                 )
                 return updated_metric
+
+        # ---------------------------------------------------------------------
+        # 8. INSPECT_PLAN (Pre-merge diff analysis & risk assessment)
+        # ---------------------------------------------------------------------
+        if action == ReviewAction.INSPECT_PLAN:
+            doc_id = target_id
+            proposed_markdown = payload.get("proposed_markdown", "")
+            async with profiled_transaction(self.engine.db, scope) as conn:
+                docs = await conn.select_rows("documents", lambda d: d["doc_id"] == doc_id)
+                if not docs:
+                    # fail-closed：doc_id 拼错 / 越权时绝不拿空串当「当前文档」，
+                    # 否则会输出一份 has_changes=true 的看似正常的变更计划。
+                    raise PermissionDeniedError("Resource not found or access denied")
+                doc = docs[0]
+                if not scope.can_read(doc["space_id"], doc["category"]):
+                    raise PermissionDeniedError("Caller lacks permission to read target document")
+                current_text = self.engine.storage.read_wiki_by_record(doc["space_id"], doc["wiki_rel_path"])
+                # WIKI 文件头部的 YAML frontmatter 是系统托管字段，不属于用户可编辑的
+                # 知识正文；若把它算进 diff，会把「删掉 frontmatter」误判成大规模知识撤销。
+                if current_text.startswith("---\n"):
+                    _, separator, body = current_text.partition("\n---\n")
+                    if separator:
+                        current_text = body.lstrip("\n")
+            from .evolution_chain import compile_proposed_change_plan
+            plan = compile_proposed_change_plan(current_text, proposed_markdown)
+            plan_dict = asdict(plan)
+            # `sections_affected` 是 `impacted_headings` 的对外别名：CLI 与 MCP
+            # 消费者使用前者，dataclass 的真实字段名仍保留在响应里。
+            plan_dict["sections_affected"] = list(plan.impacted_headings)
+            return {
+                "action": "INSPECT_PLAN",
+                "doc_id": doc_id,
+                **plan_dict,
+            }
+
+        # ---------------------------------------------------------------------
+        # 9. VERIFY_CITATION (Citation factual grounding verification)
+        # ---------------------------------------------------------------------
+        if action == ReviewAction.VERIFY_CITATION:
+            doc_id = target_id
+            citation_text = payload.get("citation_text", "")
+            verbatim_quote = payload.get("verbatim_quote")
+            asset_type = payload.get("asset_type", "WIKI")
+            report = await self.verify_citation(
+                raw_token,
+                doc_id=doc_id,
+                claim_text=citation_text,
+                verbatim_quote=verbatim_quote,
+                asset_type=asset_type,
+            )
+            # `verify_citation_content` 的真实字段是 verification_status /
+            # similarity_score / matched_snippet；这里补齐治理动作对外口径
+            # status / overlap_score / best_snippet，供 CLI 与 MCP 消费者共用。
+            return {
+                **report,
+                "action": "VERIFY_CITATION",
+                "claim_text": citation_text,
+                "status": report["verification_status"],
+                "overlap_score": report["similarity_score"],
+                "best_snippet": report.get("matched_snippet"),
+            }
 
         raise OmniLoreError("NOT_IMPLEMENTED", f"Action {action} handler not configured")
 

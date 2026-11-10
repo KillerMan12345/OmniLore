@@ -295,7 +295,7 @@ omnilore/
 │   ├── __main__.py                                   # 新增：python -m omnilore
 │   ├── bootstrap.py                                  # 新增：零密钥引导（CLI 与 MCP 共用）
 │   ├── textio.py                                     # 新增：跨平台规范 LF 文本 I/O
-│   ├── engine.py                                     # 核心引擎（约 3200 行，贡献请看 CONTRIBUTING）
+│   ├── engine.py                                     # 核心引擎（约 3800 行，贡献请看 CONTRIBUTING）
 │   ├── pg_repository.py                              # asyncpg 参数化 SQL 仓储层（尚未接入 CLI / MCP 业务数据路径）
 │   ├── pg_runtime.py                                 # 安全 PG 运行时连接层：强制安全角色 + 事务内 SET LOCAL ROLE + RLS GUC
 │   ├── dashscope_client.py                           # 百炼 HTTP 适配层 + 模型配置（读 OMNILORE_* 环境变量）
@@ -310,7 +310,7 @@ omnilore/
 │   ├── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
 │   ├── verify_rls_app_role.py                        # 用**应用角色**在真实 PG 上复现 RLS 三条（需真实 PG + 应用角色）
 │   └── verify_audit_bundle.py                        # 证据包探针：改 1 字节必须 mismatch + exit 3
-└── tests/                                            # 端到端验收测试，共 168 个用例（0 skip）
+└── tests/                                            # 端到端验收测试，共 171 个用例（0 skip）
     ├── _platform_support.py                          # 新增：宿主能力探测（symlink → junction 回退）
     ├── test_omnilore_phase0_acceptance.py           # Phase 0/1 专项（安全/RLS/幂等/恢复/模型门禁）10 项
     ├── test_full_omnilore_suite.py                  # Phase 0~3 + Ops 综合验收 9 项
@@ -322,7 +322,8 @@ omnilore/
     ├── test_citation_grounding.py                   # 理念二：防幻觉强制引用校验（Citation Grounding）4 项
     ├── test_tiered_mcp_tooling.py                   # 理念四：MCP 工具能力分层治理（Query/Governance）2 项
     ├── test_storage_contract.py                     # 理念五：最小存储后端契约与适配层 2 项
-    └── test_evolution_chain.py                      # 理念三：知识因果演化链与 MRP 变更提议 3 项
+    ├── test_evolution_chain.py                      # 理念三：知识因果演化链与 MRP 变更提议 3 项
+    └── test_mcp_dag_and_plan_actions.py              # 新增：MCP 扩展动作（EVOLUTION_DAG / INSPECT_PLAN / VERIFY_CITATION）3 项（Implemented，离线验证）
 ```
 
 ---
@@ -334,7 +335,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 # 等价：make verify
 ```
 
-**168 个测试用例**，全部离线运行，不需要数据库或 API Key：
+**171 个测试用例**，全部离线运行，不需要数据库或 API Key：
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---|---|
@@ -349,8 +350,9 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | `test_tiered_mcp_tooling.py` | 2 项 | MCP 分层元数据规范（Query 消费面 vs Governance 治理面）与筛选（Implemented，离线验证） |
 | `test_storage_contract.py` | 2 项 | 统一 StorageBackend Protocol 契约与引擎适配层（Implemented，离线验证） |
 | `test_evolution_chain.py` | 3 项 | CausalEvolutionDAG 因果指针跟踪与 MRP 知识变更提议检查（Implemented，离线验证） |
+| `test_mcp_dag_and_plan_actions.py` | 3 项 | EVOLUTION_DAG 资产、INSPECT_PLAN 变更预审、VERIFY_CITATION 引用核验（Implemented，离线验证） |
 
-> ⚠️ **这 168 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
+> ⚠️ **这 171 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
 > 它与 PostgreSQL RLS **同构**，但**不是真实 PostgreSQL** —— 所以它们证明的是**逻辑正确性**，
 > 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS 相关能力一律标注 `Simulated` ——
 > **两条例外**（都在真实 PostgreSQL 16.15 上取过证，但**证据性质不同**）：
@@ -371,7 +373,7 @@ OmniLore 支持 **x86_64 与 arm64** 两种 CPU 架构，验证方式不同，�
 | 架构 | 状态 | 验证方式 |
 |---|---|---|
 | `x86_64`（Linux / Windows；macOS Intel 为兼容目标） | `Tested-real`（Linux / Windows） | CI 离线矩阵为 `ubuntu-latest` × `windows-latest` × Python 3.11/3.12；当前没有 macOS job，**不得把 macOS 写成已验证** |
-| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Tested-real` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 168 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。边界：仅覆盖离线套件 + `ruff` + 零密钥冒烟，不覆盖真实 PG 业务数据面 |
+| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Tested-real` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 171 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。边界：仅覆盖离线套件 + `ruff` + 零密钥冒烟，不覆盖真实 PG 业务数据面 |
 
 > 为什么 arm64 单独一个 job 而不是并进矩阵：`integration-rls` 刻意留在 x86（真实 PostgreSQL
 > service container）。在 arm64 上同时引入「新架构 + 新服务容器」两个变量，一旦红了分不清是谁的锅。
@@ -418,7 +420,7 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 > | `Planned` | 尚未实现，或仅有模板、未经过自动化验证 |
 >
 > **当前统计（三处一致，由测试守护）：**
-> `Implemented` 9 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
+> `Implemented` 12 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **35 条**。
 >
 > **测试跑在什么上面（重要）**：本项目的绝大多数业务用例都跑在
 > `omnilore.engine.RLSDatabaseEngine`（**内存仿真引擎**）上 —— 它与 PostgreSQL RLS
@@ -455,7 +457,7 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 - **[Simulated]** **混合检索（BM25 + 向量 + 代码符号）**：`keyword_only` 路径真实执行；**`hybrid`（1024 维向量）路径在 CI 里是 monkeypatch 桩，没有真实网络调用**，故整体标 `Simulated`。
 - **[Implemented]** **AST 代码符号提取**：类名、方法名、REST 路由、`ADR-xxx`，支持按 `code_symbol` 过滤。
 - **[Simulated]** **两阶段零停机版本控制**：新建 / `REPLACE_VERSION` / `SUPPLEMENT_DOC` / `REVERT_VERSION`。
-- **[Simulated]** **七类审核动作**：`APPROVE_REVIEW`、`RECLASSIFY`、`SPLIT_DOCUMENT`、`FIX_EXTRACTED_FIELD`、`REVERT_VERSION`、`PROMOTE_COPY`（含脱敏预览）、`CANCEL_TASK`。
+- **[Simulated]** **九类审核动作**：`APPROVE_REVIEW`、`RECLASSIFY`、`SPLIT_DOCUMENT`、`FIX_EXTRACTED_FIELD`、`REVERT_VERSION`、`PROMOTE_COPY`（含脱敏预览）、`CANCEL_TASK`，以及新增的 `INSPECT_PLAN`（变更预审）、`VERIFY_CITATION`（引用核验）。后两项各有进程内自动化用例，但整组治理动作仍只跑在内存仿真引擎上，**不标 `Tested-real`**。
 - **[Simulated]** **Obsidian 双向同步**：写回哈希比对防死循环、受保护 Frontmatter 字段防篡改、冲突副本、自动生成 `_dashboard_控制台.md`。
 - **[Implemented]** **受保护字段白名单可配**：`OMNILORE_PROTECTED_FRONTMATTER` 可增删受保护系统字段，`none` 整体关闭 —— 你的笔记你做主（见首屏声明）。
 - **[Implemented]** **冲突副本落隐藏目录**：`.conflict_r*.md` 不再散落 vault，落到 `.omnilore/conflicts/`，可用 `OMNILORE_CONFLICT_DIR` 改。
@@ -488,6 +490,31 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 - **[Implemented]** **统一数据目录解析（R-11b）**：数据目录只有一个解析入口 `omnilore.pathutil.resolve_data_dir`（CLI / MCP 服务端 / 证据包 / 运行时索引全部基于同一根），`ops/index`、`ops/bootstrap.json`、`ops/audit_bundles` 都在同一棵树下；由静态守卫禁止任何模块自己 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR`。
 - **[Tested-real]** **真实 PostgreSQL 集成 CI**：`.github/workflows/ci.yml` 新增独立 job `integration-rls` —— 用 `pgvector/pgvector:0.8.0-pg16` 起一个**干净的真实 PostgreSQL 16**，跑 `tools/verify_rls_pg.py` 的三条探针，并把 exit 2（未验证）/ exit 3（结论为否）**逐码**转成 job 失败（不许 `continue-on-error`，不许当跳过）。**它已真实运行并连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`，3 条探针均 PASS），故由 `Implemented` 升 `Tested-real`。**边界**：该 job 只跑**独立 SQL 探针**，**不覆盖 CLI / MCP 业务运行时的接线**，也不意味着业务数据已走 PostgreSQL。
 - **[Tested-real]** **PostgreSQL 安全连接层与 RLS 生效验证**：`omnilore/pg_runtime.py` 的 `PgRuntime` 在设置 `DATABASE_URL` 时由 MCP stdio 服务端建立连接，并强制校验连接角色**非超级用户、无 `BYPASSRLS`、是策略目标角色（`omnilore_gateway` / `omnilore_worker`）成员**，任一不满足即**拒绝启动**（fails closed —— 这类角色会静默绕过 RLS，比连不上更危险）；事务内 `SET LOCAL ROLE` 切到策略角色，并以 `app.*` GUC 注入请求上下文，注入失败即中止事务。证据：2026-10-25 在**真实 PostgreSQL 16.15** 上以应用角色 `omnilore_app` 人工跑通三条探针（未授权空间 0 行 / 授权后 1 行以排除空表假阳性 / 连接角色 `superuser=false, bypassrls=false`），超级用户 `omnilore_migrator` 连接被拒绝启动。**这是人工一次性验证、非 CI**（可复跑：`python tools/verify_rls_app_role.py`，需真实 PG + 应用角色）。**边界（很重要）**：这条连接只做安全接入与启动自检，**业务数据层仍走内存 `RLSDatabaseEngine`，结构化状态不会持久化到 PostgreSQL，也不能据此宣称多人共享**；把它读成「已接通 PostgreSQL 持久化」是误读。
+
+### 增量能力（MCP 扩展动作）
+
+- **[Implemented]** **知识版本因果演化链（EVOLUTION_DAG 资产）**：`get_document_asset` 新增
+  `EVOLUTION_DAG` 资产类型，由 `documents` / `document_series` / `document_relations` 构建
+  `CausalEvolutionDAG`，返回 `doc_id` / `asset_type` / `series_id` / `total_versions` /
+  `root_version_key` / `latest_version_key` / `ascii_graph` / `nodes`。读路径保留
+  `scope.can_read` 与 RLS `select_rows` 收口。**边界**：MCP 工具口径仍为 7 个，这不是新工具；
+  3 项用例是进程内离线用例，跑在内存仿真引擎上，不证明真实 PG 数据面已接通。
+- **[Implemented]** **MRP 变更预审与引用真实性核验（INSPECT_PLAN / VERIFY_CITATION）**：
+  `review_and_fix_knowledge` 新增两个治理动作，action 枚举由 `[a.value for a in ReviewAction]`
+  动态生成。`INSPECT_PLAN` 用 `dataclasses.asdict(plan)` 输出差异、风险评级与受影响小节
+  （真实字段 `impacted_headings` + 对外别名 `sections_affected`）；`VERIFY_CITATION` 把
+  payload 的 `citation_text` 映射为 `claim_text`，返回 `verification_status` /
+  `similarity_score` / `matched_snippet` / `is_grounded` 及对外别名 `status` /
+  `overlap_score` / `best_snippet` / `claim_text`。**边界**：核验对象是本地 Wiki 正文与
+  内存引擎中的文档，不是外部事实库；未证实引用在文本与 `--json` 两种模式下均以
+  退出码 3 失败关闭（`status` 字段同时给出判定）。
+- **[Implemented]** **治理 CLI 跨进程状态回填（plan / history / verify-citation）**：
+  `omnilore plan` / `history` / `verify-citation` 三个子命令支持文本与 `--json` 输出；
+  `_hydrate_runtime_state()` 复用 `load_runtime_index` 把 `documents` /
+  `document_series` / `assets` / `document_assets` 回填进内存引擎 `db._state`，仅在
+  `RLSDatabaseEngine` 且 `documents` 为空时生效，PG 后端与同进程已有数据不覆盖。
+  **边界**：索引只是派生物、只负责定位，正文仍从磁盘真实字节读取；跨进程回填没有接入 CI
+  的真实子进程自动化用例，不能标 `Tested-real`。
 
 ### 其他边界明确的能力
 
@@ -568,7 +595,7 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 
 ## 参与贡献
 
-贡献动机不必从读懂约 3200 行的 `engine.py` 开始 —— **六条贡献路径全都绕开了核心文件**
+贡献动机不必从读懂约 3800 行的 `engine.py` 开始 —— **六条贡献路径全都绕开了核心文件**
 （SQL 迁移、n8n 工作流、解析器纯函数、测试用例、文档、CLI 体验）。其中 n8n 工作流
 这条路径已有 JSON 结构与内部 Worker 网关自动化证据（`Implemented`），但尚未在真实 n8n 实例导入运行。
 

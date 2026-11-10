@@ -55,7 +55,7 @@
 - 它没有真实的 MVCC、锁、事务隔离级别与 `pgvector` 索引行为；
 - 进程退出后结构化状态清空（磁盘上的原始资产与 Markdown 知识页保留）。
 
-所以：**「168 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已验证」。**
+所以：**「171 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已验证」。**
 其中绝大多数业务用例跑在内存仿真引擎上，少数几条守卫只做静态文本/配置判定（不碰引擎，
 例如 `make` 目标存在性、仓库 LF、compose 启动超用户角色名），
 另有 5 个 `test_pg_runtime_wiring.py` 用例用
@@ -120,7 +120,7 @@ exit 2/3 都会让 job 变红），**并已于 2026-10-26 连续 2 次真实绿�
 | 混合检索（BM25 + 向量 + 代码符号） | `Simulated` | 核心能力 / Phase 1 | `make verify-search` | ⚠️ `hybrid` 路径在 CI 里是 **monkeypatch 桩**（无真实网络调用、无真实 1024 维向量）；`keyword_only` 路径才是真实执行的 |
 | AST 代码符号提取 | `Implemented` | 核心能力 / Phase 1 | `make verify-parsers` | 纯函数，无外部依赖 |
 | 两阶段零停机版本控制 | `Simulated` | 核心能力 / Phase 1 | `make verify-rls` | 版本切换的状态机在内存引擎上验证 |
-| 七类审核动作 | `Simulated` | 核心能力 / Phase 1 | `make verify-rls` | 含 `PROMOTE_COPY` 脱敏预览 |
+| 九类审核动作 | `Simulated` | 核心能力 / Phase 1 | `make verify-rls` | 含 `PROMOTE_COPY` 脱敏预览；新增 `INSPECT_PLAN` / `VERIFY_CITATION` 各有进程内自动化用例，但整组治理动作仍只跑在内存仿真引擎上，**不标 `Tested-real`** |
 | Obsidian 双向同步 | `Simulated` | 核心能力 / Phase 1 | `make verify-sync` | 防死循环 / 受保护字段 / 冲突副本 |
 | 受保护字段白名单可配 | `Implemented` | 核心能力 / Phase 1 | `make verify-sync` | `OMNILORE_PROTECTED_FRONTMATTER`，可整体关闭 |
 | 冲突副本落隐藏目录 | `Implemented` | 核心能力 / Phase 1 | `make verify-sync` | 默认 `.omnilore/conflicts/`，可改 `OMNILORE_CONFLICT_DIR` |
@@ -142,9 +142,12 @@ exit 2/3 都会让 job 变红），**并已于 2026-10-26 连续 2 次真实绿�
 | n8n 工作流（3 条） | `Implemented` | 核心能力 / 其他边界明确的能力 | `make verify` | `test_09_n8n_workflows_and_internal_worker_gateway` 自动验证三份 JSON 的结构、无硬编码凭据，以及内部 Worker 网关的入库 / 恢复 / lint / 备份；**尚未在真实 n8n 实例导入、启动和运行**，故不标 `Tested-real` |
 | 真实 PostgreSQL 集成 CI | `Tested-real` | 核心能力 / 其他宣称 | `make verify-rls-pg` | 已接入 Actions 的 `integration-rls` job（`pgvector/pgvector:0.8.0-pg16` service container + `pg_isready -U -d` 健康检查 + 零 Secret；exit 2「未验证」/ exit 3「结论为否」**逐码**转成 job 失败，无 `continue-on-error`）。**它已真实运行并连续 2 次绿灯**（Run #1 `8d0ecc3`、Run #2 `5d513fe`，3 条探针均 PASS），达到「连续 ≥2 次绿灯」的门槛，故由 `Implemented` 升 `Tested-real`。**边界**：该 job 只跑**独立 SQL 探针**（`tools/verify_rls_pg.py`），**不覆盖 CLI / MCP 业务运行时的接线**，也**不证明**业务数据已走 PostgreSQL |
 | PostgreSQL 安全连接层与 RLS 生效验证 | `Tested-real` | 核心能力 / 其他宣称 | `python tools/verify_rls_app_role.py` | `omnilore/pg_runtime.py` 的 `PgRuntime`：设置 `DATABASE_URL` 时由 MCP stdio 服务端建立连接，强制连接角色**非超级用户、无 `BYPASSRLS`、是策略目标角色成员**，任一不满足即**拒绝启动**（fails closed —— 这类角色会静默绕过 RLS，比连不上更危险）；事务内 `SET LOCAL ROLE` 切到策略角色，并以 `app.*` GUC 注入请求上下文，注入失败即中止事务。证据：**2026-10-25 / 2026-10-26 在真实 PostgreSQL 16.15 上以应用角色 `omnilore_app` 的两次一次性人工验证（两套独立环境）**（**非 CI**，验证脚本未接进 CI），三条探针全部 PASS（未授权空间 0 行 / 授权后 1 行以排除空表假阳性 / 连接角色 `superuser=false, bypassrls=false`），超级用户 `omnilore_migrator` 连接被拒绝启动；输出见第 6.1 节，可复跑脚本 `tools/verify_rls_app_role.py`（需真实 PG + 应用角色）。**离线自动化只有 5 条 mock 用例**（`tests/test_pg_runtime_wiring.py`：默认内存引擎、无 `DATABASE_URL` 时不接 PG、拒绝超用户 / BYPASSRLS 连接角色），**不连真实 PG**。**边界（必须一并读）**：该连接只做安全接入与启动自检，**业务数据层仍走内存 `RLSDatabaseEngine`** —— 本条**不**证明业务状态已持久化到 PostgreSQL，也**不**证明可多人共享；混合检索未接入运行时 |
+| 知识版本因果演化链（EVOLUTION_DAG 资产） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `get_document_asset(asset_type="EVOLUTION_DAG")` 由 `documents` / `document_series` / `document_relations` 构建 `CausalEvolutionDAG`，返回 `doc_id` / `asset_type` / `series_id` / `total_versions` / `root_version_key` / `latest_version_key` / `ascii_graph` / `nodes`；读路径保留 `scope.can_read` 与 RLS `select_rows` 收口。**边界**：MCP 工具口径仍为 7 个（不是新工具），3 项进程内离线用例跑在内存仿真引擎上，不证明真实 PG 数据面已接通 |
+| MRP 变更预审与引用真实性核验（INSPECT_PLAN / VERIFY_CITATION） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `review_and_fix_knowledge` 新增两个治理动作，action 枚举由 `[a.value for a in ReviewAction]` 动态生成；`INSPECT_PLAN` 用 `dataclasses.asdict(plan)` 输出差异、风险评级与受影响小节（真实字段 `impacted_headings` + 对外别名 `sections_affected`），`VERIFY_CITATION` 把 `citation_text` 映射为 `claim_text` 并补齐 `status` / `overlap_score` / `best_snippet` 对外别名。**边界**：核验对象是本地 Wiki 正文与内存引擎中的文档，不是外部事实库；未证实引用在文本与 `--json` 两种模式下均以退出码 3 失败关闭（`status` 字段同时给出判定） |
+| 治理 CLI 跨进程状态回填（plan / history / verify-citation） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `omnilore plan` / `history` / `verify-citation` 支持文本与 `--json` 输出；`_hydrate_runtime_state()` 复用 `load_runtime_index` 把 `documents` / `document_series` / `assets` / `document_assets` 回填进内存引擎 `db._state`，仅在 `RLSDatabaseEngine` 且 `documents` 为空时生效，PG 后端与同进程已有数据不覆盖。**边界**：索引只是派生物、只负责定位，正文仍从磁盘真实字节读取；跨进程回填没有接入 CI 的真实子进程自动化用例，不能标 `Tested-real` |
 
 **当前统计（由测试守护，与 README / CHANGELOG 三处一致）：**
-`Implemented` 9 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **32 条**。
+`Implemented` 12 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **35 条**。
 
 ---
 

@@ -39,8 +39,9 @@ from .bootstrap import (
 )
 from .dashscope_client import ModelConfigError
 from .embedding_provider import EmbeddingConfigurationError
-from .engine import OmniLoreEngine, OmniLoreMCPGateway, OmniLoreError
+from .engine import OmniLoreEngine, OmniLoreMCPGateway, OmniLoreError, ReviewAction, RLSDatabaseEngine
 from .pathutil import resolve_data_dir
+from .runtime_index import load_runtime_index
 from .textio import pin_utf8_std_streams
 
 # The sample knowledge used by `omnilore demo`. Kept in-repo so the demo never
@@ -348,6 +349,252 @@ def _run_audit_bundle(args: Namespace) -> int:
     return asyncio.run(_async_audit_bundle(args))
 
 
+def _hydrate_runtime_state(engine: OmniLoreEngine, data_dir: Path) -> None:
+    """把 `ops/index/` 运行时索引回填进内存引擎，让治理命令跨进程可用。
+
+    默认引擎是内存仿真引擎，CLI 每次运行都是**全新进程**：`ensure_bootstrapped`
+    只重建身份（space / membership / token），文档元数据仍留在上一次进程里。
+    不回填的话 `plan` / `history` / `verify-citation` 只会看到空库，正常文档也会被
+    误判为「资源不存在」而失败关闭（见 `INSPECT_PLAN` 的 fail-closed 分支）。
+    `audit-bundle` 早已用同一份派生索引解决跨进程定位，这里沿用同一约定：
+    索引只负责定位，文档正文仍由 `storage.read_wiki_by_record` 从磁盘真实字节读取。
+
+    仅在内存引擎且 `documents` 为空时生效；PG 后端自行持久化，同进程已有数据时不覆盖。
+    """
+    if not isinstance(engine.db, RLSDatabaseEngine):
+        return
+    state = engine.db._state
+    if state["documents"]:
+        return
+    index = load_runtime_index(data_dir)
+    if index is None:
+        return
+
+    for asset_id, payload in index["assets"].items():
+        cas_rel = str(payload.get("cas_rel_path") or "")
+        if cas_rel.startswith("ops/cas/"):
+            cas_rel = cas_rel[len("ops/cas/"):]
+        state["assets"][asset_id] = {
+            "asset_id": asset_id,
+            "sha256_hash": payload.get("sha256_hash"),
+            "storage_rel_path": cas_rel,
+            "mime_type": payload.get("mime_type"),
+            "byte_size": payload.get("size_bytes"),
+            "created_at": payload.get("ingested_at"),
+        }
+
+    for doc_id, payload in index["documents"].items():
+        series_id = str(payload.get("series_id") or "")
+        state["documents"][doc_id] = {
+            "doc_id": doc_id,
+            "space_id": payload.get("space_id"),
+            "category": payload.get("category"),
+            "series_id": series_id,
+            "version_label": payload.get("version_label"),
+            "title": payload.get("title"),
+            "summary": "",
+            "wiki_rel_path": payload.get("wiki_rel_path"),
+            "file_hash": payload.get("page_sha256"),
+            "content_revision": payload.get("content_revision"),
+            "doc_status": payload.get("doc_status"),
+            "is_current": bool(payload.get("is_current")),
+            "created_by": "",
+            "created_at": payload.get("created_at"),
+            "updated_at": payload.get("updated_at"),
+        }
+        if series_id and series_id not in state["document_series"]:
+            state["document_series"][series_id] = {
+                "series_id": series_id,
+                "space_id": payload.get("space_id"),
+                "category": payload.get("category"),
+                "version_key": payload.get("version_key"),
+                "current_doc_id": payload.get("series_current_doc_id"),
+                "revision_number": payload.get("series_revision_number"),
+                "created_at": payload.get("created_at"),
+                "updated_at": payload.get("updated_at"),
+            }
+        source_names = payload.get("source_names") or {}
+        source_locators = payload.get("source_locators") or {}
+        for asset_id in payload.get("asset_ids") or []:
+            state["document_assets"][str(asset_id)] = {
+                "doc_id": doc_id,
+                "asset_id": asset_id,
+                "space_id": payload.get("space_id"),
+                "category": payload.get("category"),
+                "original_filename": source_names.get(str(asset_id)),
+                "source_locator": source_locators.get(str(asset_id)),
+            }
+
+
+async def _async_plan(args: Namespace) -> int:
+    """执行 MRP 知识变更预审计划（对比待更新内容与当前文档）。"""
+    data_dir = resolve_data_dir(args.data_dir)
+    file_path = Path(args.file).resolve()
+    if not file_path.exists():
+        _print_err(f"错误: 待预审文件不存在: {file_path}")
+        return EXIT_ERROR
+
+    content = file_path.read_text(encoding="utf-8")
+    doc_id = args.doc_id
+    if not doc_id:
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    import yaml
+                    fm = yaml.safe_load(parts[1])
+                    if isinstance(fm, dict):
+                        doc_id = fm.get("doc_id")
+                except Exception:
+                    pass
+        if not doc_id:
+            doc_id = file_path.stem
+
+    engine = OmniLoreEngine(data_dir)
+    result = ensure_bootstrapped(engine, data_dir, token=args.token, space_id=args.space_id)
+    _hydrate_runtime_state(engine, data_dir)
+    token = args.token or result.raw_token
+    gw = OmniLoreMCPGateway(engine)
+
+    try:
+        res = await gw.review_and_fix_knowledge(
+            token,
+            action=ReviewAction.INSPECT_PLAN,
+            target_id=doc_id,
+            payload={"proposed_markdown": content},
+        )
+    except Exception as e:
+        _print_err(f"生成变更预审计划失败: {e}")
+        return EXIT_ERROR
+
+    if args.json:
+        _print(json.dumps(res, ensure_ascii=False, indent=2))
+        return EXIT_OK
+
+    _print()
+    _print("=" * 68)
+    _print(f"OmniLore MRP 知识变更预审计划: 《{doc_id}》")
+    _print("=" * 68)
+    _print(f"  目标文档 ID : {doc_id}")
+    _print(f"  风险评级    : {res.get('risk_level', 'UNKNOWN')}")
+    _print(f"  合并建议    : {res.get('recommendation', '')}")
+    _print(f"  增删统计    : +{res.get('added_lines', 0)} 行 / -{res.get('deleted_lines', 0)} 行")
+    sections = res.get("sections_affected", [])
+    if sections:
+        _print("  受影响小节  :")
+        for s in sections:
+            _print(f"    - {s}")
+    else:
+        _print("  受影响小节  : （无小节结构变化）")
+    _print()
+    return EXIT_OK
+
+
+def _run_plan(args: Namespace) -> int:
+    """Execute the `plan` sub-command and return a process exit code."""
+    return asyncio.run(_async_plan(args))
+
+
+async def _async_history(args: Namespace) -> int:
+    """查询文档版本因果演化链 DAG 与 ASCII 拓扑谱图。"""
+    data_dir = resolve_data_dir(args.data_dir)
+    doc_id = args.doc_id
+    engine = OmniLoreEngine(data_dir)
+    result = ensure_bootstrapped(engine, data_dir, token=args.token, space_id=args.space_id)
+    _hydrate_runtime_state(engine, data_dir)
+    token = args.token or result.raw_token
+    gw = OmniLoreMCPGateway(engine)
+
+    try:
+        asset = await gw.get_document_asset(token, doc_id=doc_id, asset_type="EVOLUTION_DAG")
+    except Exception as e:
+        _print_err(f"获取版本因果拓扑失败: {e}")
+        return EXIT_ERROR
+
+    if args.json:
+        _print(json.dumps(asset, ensure_ascii=False, indent=2))
+        return EXIT_OK
+
+    _print()
+    _print("=" * 68)
+    _print(f"OmniLore 版本因果演化链: 《{doc_id}》")
+    _print("=" * 68)
+    _print(f"  版本总数    : {asset.get('total_versions', 0)}")
+    _print(f"  根版本      : {asset.get('root_version_key', 'none')}")
+    _print(f"  最新版本    : {asset.get('latest_version_key', 'none')}")
+    _print()
+    _print("  因果演化链谱 (ASCII):")
+    for line in asset.get("ascii_graph", "").splitlines():
+        _print(f"    {line}")
+    _print()
+    return EXIT_OK
+
+
+def _run_history(args: Namespace) -> int:
+    """Execute the `history` sub-command and return a process exit code."""
+    return asyncio.run(_async_history(args))
+
+
+async def _async_verify_citation(args: Namespace) -> int:
+    """在终端核验引用陈述在知识库目标文档中的真实性。"""
+    data_dir = resolve_data_dir(args.data_dir)
+    doc_id = args.doc_id
+    citation_text = args.text
+    engine = OmniLoreEngine(data_dir)
+    result = ensure_bootstrapped(engine, data_dir, token=args.token, space_id=args.space_id)
+    _hydrate_runtime_state(engine, data_dir)
+    token = args.token or result.raw_token
+    gw = OmniLoreMCPGateway(engine)
+
+    try:
+        report = await gw.review_and_fix_knowledge(
+            token,
+            action=ReviewAction.VERIFY_CITATION,
+            target_id=doc_id,
+            payload={"citation_text": citation_text, "verbatim_quote": args.quote},
+        )
+    except Exception as e:
+        _print_err(f"引用真实性比对失败: {e}")
+        return EXIT_ERROR
+
+    # 完整性门禁必须在 --json 之前算出退出码：JSON 只是输出格式，不能把
+    # 「未通过真实性核验」降级成 EXIT_OK（与 _async_audit_bundle 的既有惯例一致）。
+    status = report.get("status")
+    score = report.get("overlap_score", 0.0)
+    exit_code = (
+        EXIT_OK
+        if status in ("VERIFIED", "PARTIALLY_VERIFIED")
+        else EXIT_INTEGRITY_NOT_VERIFIED
+    )
+
+    if args.json:
+        _print(json.dumps(report, ensure_ascii=False, indent=2))
+        return exit_code
+
+    _print()
+    _print("=" * 68)
+    _print(f"OmniLore 防幻觉事实引用校验报告: 《{doc_id}》")
+    _print("=" * 68)
+    _print(f"  待核验陈述  : {report.get('claim_text')}")
+    _print(f"  校验判定    : {status}")
+    _print(f"  置信匹配分  : {score:.4f}")
+    if report.get("best_snippet"):
+        _print(f"  原文命中段落: {report.get('best_snippet')}")
+    _print()
+    if status == "VERIFIED":
+        _print("  结论        : ✅ 引用已被证据原文严格证实（VERIFIED）。")
+    elif status == "PARTIALLY_VERIFIED":
+        _print("  结论        : ⚠️  部分符合原文事实，但存在改写或细节偏差（PARTIALLY_VERIFIED）。")
+    else:
+        _print("  结论        : ❌ 原文未找到匹配依据或存在错误引用（UNVERIFIED_OR_MISQUOTED）。")
+    return exit_code
+
+
+def _run_verify_citation(args: Namespace) -> int:
+    """Execute the `verify-citation` sub-command and return a process exit code."""
+    return asyncio.run(_async_verify_citation(args))
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the top-level argparse parser and all sub-parsers."""
     parser = argparse.ArgumentParser(
@@ -394,6 +641,42 @@ def build_parser() -> argparse.ArgumentParser:
                          help="输出目录，缺省 <data-dir>/ops/audit_bundles（同名文件会被覆盖）")
     p_audit.add_argument("--json", action="store_true", help="把完整证据包同时打印到 stdout")
     p_audit.set_defaults(func=_run_audit_bundle)
+
+    p_plan = subparsers.add_parser(
+        "plan",
+        help="执行 MRP 知识变更预审计划（对比本地文件与库中文档，输出差异、受影响小节与风险评级）",
+    )
+    p_plan.add_argument("file", help="待预审的本地 Markdown 文件路径")
+    p_plan.add_argument("--doc-id", default=None, help="目标文档 ID（缺省从文件 frontmatter 或文件名推断）")
+    p_plan.add_argument("--data-dir", default=str(_default_data_dir()), help="数据目录，默认 ./OmniLore_Data")
+    p_plan.add_argument("--space-id", default=None, help="目标空间 ID")
+    p_plan.add_argument("--token", default=None, help="指定操作 token")
+    p_plan.add_argument("--json", action="store_true", help="以 JSON 格式输出预审计划")
+    p_plan.set_defaults(func=_run_plan)
+
+    p_history = subparsers.add_parser(
+        "history",
+        help="打印文档版本因果演化链 DAG 与 ASCII 拓扑谱图",
+    )
+    p_history.add_argument("doc_id", help="目标文档 ID")
+    p_history.add_argument("--data-dir", default=str(_default_data_dir()), help="数据目录，默认 ./OmniLore_Data")
+    p_history.add_argument("--space-id", default=None, help="目标空间 ID")
+    p_history.add_argument("--token", default=None, help="指定操作 token")
+    p_history.add_argument("--json", action="store_true", help="以 JSON 格式输出因果演化拓扑")
+    p_history.set_defaults(func=_run_history)
+
+    p_verify_citation = subparsers.add_parser(
+        "verify-citation",
+        help="防幻觉事实引用校验（比对陈述文本与知识库目标文档原文）",
+    )
+    p_verify_citation.add_argument("--doc-id", required=True, help="目标文档 ID")
+    p_verify_citation.add_argument("--text", required=True, help="待核验的引用/陈述文本")
+    p_verify_citation.add_argument("--quote", default=None, help="原文精确引句（可选）")
+    p_verify_citation.add_argument("--data-dir", default=str(_default_data_dir()), help="数据目录，默认 ./OmniLore_Data")
+    p_verify_citation.add_argument("--space-id", default=None, help="目标空间 ID")
+    p_verify_citation.add_argument("--token", default=None, help="指定操作 token")
+    p_verify_citation.add_argument("--json", action="store_true", help="以 JSON 格式输出校验报告")
+    p_verify_citation.set_defaults(func=_run_verify_citation)
 
     p_version = subparsers.add_parser("version", help="打印版本号")
     p_version.set_defaults(func=_cmd_version)

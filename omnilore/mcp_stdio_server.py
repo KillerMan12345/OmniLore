@@ -56,14 +56,14 @@ MCP_TOOL_DEFINITIONS = [
     },
     {
         "name": "get_document_asset",
-        "description": "Retrieve full Wiki Markdown, original raw asset, or an un-folded chunk (by chunk_id/doc_id) without bare file paths.",
+        "description": "Retrieve full Wiki Markdown, original raw asset, an un-folded chunk (by chunk_id/doc_id), or version causal evolution graph (EVOLUTION_DAG) without bare file paths.",
         "inputSchema": {
             "type": "object",
             "required": ["token", "doc_id"],
             "properties": {
                 "token": {"type": "string"},
                 "doc_id": {"type": "string"},
-                "asset_type": {"type": "string", "enum": ["WIKI", "RAW_ASSET", "CHUNK"], "default": "WIKI"},
+                "asset_type": {"type": "string", "enum": ["WIKI", "RAW_ASSET", "CHUNK", "EVOLUTION_DAG"], "default": "WIKI"},
                 "chunk_id": {"type": "string"},
             },
         },
@@ -117,7 +117,7 @@ MCP_TOOL_DEFINITIONS = [
     },
     {
         "name": "review_and_fix_knowledge",
-        "description": "Execute controlled governance actions: APPROVE_REVIEW, RECLASSIFY, SPLIT_DOCUMENT, FIX_EXTRACTED_FIELD, REVERT_VERSION, PROMOTE_COPY, CANCEL_TASK.",
+        "description": "Execute controlled governance actions: APPROVE_REVIEW, RECLASSIFY, SPLIT_DOCUMENT, FIX_EXTRACTED_FIELD, REVERT_VERSION, PROMOTE_COPY, CANCEL_TASK, INSPECT_PLAN, VERIFY_CITATION.",
         "inputSchema": {
             "type": "object",
             "required": ["token", "action", "target_id"],
@@ -128,7 +128,17 @@ MCP_TOOL_DEFINITIONS = [
                     "enum": [a.value for a in ReviewAction],
                 },
                 "target_id": {"type": "string"},
-                "payload": {"type": "object", "default": {}},
+                "payload": {
+                    "type": "object",
+                    "default": {},
+                    "description": (
+                        "Action-specific fields. INSPECT_PLAN: {proposed_markdown}; "
+                        "VERIFY_CITATION: {citation_text, verbatim_quote?, asset_type?}; "
+                        "REVERT_VERSION: {expected_current_doc_id, rollback_to_doc_id}; "
+                        "PROMOTE_COPY: {dest_space_id, dest_category?, preview_only?, "
+                        "apply_redaction?, explicit_user_confirm?}."
+                    ),
+                },
             },
         },
     },

@@ -10,6 +10,43 @@
 
 ---
 
+## [Unreleased] — MCP 扩展动作与治理 CLI 增量
+
+> 本批次**不新增 MCP 工具**（工具口径恒为 7 个），能力全部挂到已有工具上；实现与用例都是
+> 离线内存引擎路径，不代表真实 PostgreSQL 业务数据面已接通。
+
+### Added（新增）
+
+- **`get_document_asset` 新增 `EVOLUTION_DAG` 资产类型**：由 `documents` / `document_series`
+  / `document_relations` 构建 `CausalEvolutionDAG`，返回 `doc_id` / `asset_type` /
+  `series_id` / `total_versions` / `root_version_key` / `latest_version_key` /
+  `ascii_graph` / `nodes`；读路径保留 `scope.can_read` 与 RLS `select_rows` 收口。
+  `mcp_stdio_server.py` 的 `asset_type` 枚举同步补上 `EVOLUTION_DAG`。
+- **`review_and_fix_knowledge` 新增两个治理动作**：`INSPECT_PLAN`（MRP 变更预审，用
+  `dataclasses.asdict(plan)` 输出 `unified_diff` / `risk_level` / `recommendation` /
+  `impacted_headings`，并保留对外别名 `sections_affected`）；`VERIFY_CITATION`（把 payload 的
+  `citation_text` 映射为 `claim_text`，返回真实字段 `verification_status` /
+  `similarity_score` / `matched_snippet` / `is_grounded` 及对外别名 `status` /
+  `overlap_score` / `best_snippet` / `claim_text`）。action 枚举由
+  `[a.value for a in ReviewAction]` 动态生成，自动包含两新动作；`payload` 补上字段说明。
+- **CLI 新增 `plan` / `history` / `verify-citation`**：均支持文本与 `--json` 输出；
+  `verify-citation` 对未证实引用在文本与 `--json` 两种模式下均以
+  `EXIT_INTEGRITY_NOT_VERIFIED`（退出码 3）失败关闭（报告里的 `status` 字段同时给出判定）。
+- **跨进程状态回填 `_hydrate_runtime_state()`**：默认内存引擎每个 CLI 进程都是全新实例，
+  故复用 `load_runtime_index` 把 `documents` / `document_series` / `assets` /
+  `document_assets` 回填进 `engine.db._state`；仅当 `isinstance(engine.db, RLSDatabaseEngine)`
+  且 `documents` 为空时生效，PG 后端与同进程已有数据不覆盖。索引只负责定位，正文仍由
+  `storage.read_wiki_by_record` 从磁盘真实字节读取。
+
+### Changed（口径同步）
+
+- 新增 `tests/test_mcp_dag_and_plan_actions.py` 3 项离线用例，全量套件同步为 **171 项**
+  （0 failure / 0 error / 0 skip）；README / `docs/FEATURE_STATUS.md` /
+  `docs/ROADMAP_STATUS.md` / `docs/HANDOVER.md` / `.github/workflows/ci.yml` / 本文件六处
+  数字与组成拆分同步；能力矩阵按四态标注补 3 条 `Implemented`，合计 35 条。
+
+---
+
 ## [v0.3.0-alpha] — 首个开源版本
 
 OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**可审阅的 Obsidian Markdown 知识页**
@@ -57,7 +94,7 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **R-13 能力状态矩阵（四态标注）**：新增 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)，
   README 里的**每一条能力**都标注 `Implemented` / `Tested-real` / `Simulated` / `Planned`
   四态之一，逐条对应，并由测试守护「README ↔ 矩阵 ↔ CHANGELOG 三处一致」。
-  当前 **32 条**能力标注：`Implemented` 9 条、`Tested-real` 10 条、`Simulated` 12 条、`Planned` 1 条
+  当前 **35 条**能力标注：`Implemented` 12 条、`Tested-real` 10 条、`Simulated` 12 条、`Planned` 1 条
   （`真实 PostgreSQL 集成 CI` 在 CI 连续 2 次绿灯后由 `Implemented` 升为 `Tested-real`）。
   ⚠️ 其中「混合检索（BM25 + 向量 + 代码符号）」标 `Simulated` —— `hybrid`（1024 维向量）
   路径在 CI 里是 monkeypatch 桩（无真实网络调用），只有 `keyword_only` 真实执行。
@@ -222,11 +259,11 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
     **但边界不变**：它只证明 `sql/001` 的 SQL 策略在真实 PG 上生效，
     **不等于业务运行时已接入 PostgreSQL / 数据已持久化**。
     `ARM64 架构验证` 当时因只有 1 次绿灯维持 `Implemented`；此后累计 3 次绿灯，已按同一门槛升为 `Tested-real`。
-- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 168 个测试 +
+- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 171 个测试 +
   ruff + DCO 校验 + 静态红线守卫，全程不使用任何 Secret；**另有一个独立的 `integration-rls`
   job 需要真实 PostgreSQL service container**（见上），它是全仓唯一需要外部服务的门禁，
   同样不使用任何 Secret。
-- **测试套件**：168 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、37 项首发专项、
+- **测试套件**：171 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、37 项首发专项、
   61 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
   证据包导出与篡改测试 / 21 条 RLS 策略注释守卫 / 两条真实 PG 例外的证据性质守卫）、
   30 项 W6 专项
@@ -234,13 +271,15 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   5 项 PG 运行时接线专项（`test_pg_runtime_wiring.py`：内存引擎默认 / 无 `DATABASE_URL`
   时不接 PG / 拒绝超用户与 `BYPASSRLS` 连接角色 —— **离线 mock，不连真实 PG**）、
   16 项架构理念落地专项（`test_context_budget.py` 5 项、`test_citation_grounding.py` 4 项、
-  `test_evolution_chain.py` 3 项、`test_tiered_mcp_tooling.py` 2 项、`test_storage_contract.py` 2 项）。
-  156 项业务用例跑在 `RLSDatabaseEngine` **内存仿真引擎**上（另有 2 条守卫只做静态文本
+  `test_evolution_chain.py` 3 项、`test_tiered_mcp_tooling.py` 2 项、`test_storage_contract.py` 2 项）、
+  3 项 MCP 扩展动作专项（`test_mcp_dag_and_plan_actions.py`：`EVOLUTION_DAG` 资产 /
+  `INSPECT_PLAN` 变更预审 / `VERIFY_CITATION` 引用核验）。
+  159 项业务用例跑在 `RLSDatabaseEngine` **内存仿真引擎**上（另有 2 条守卫只做静态文本
   判定、不碰引擎），与 PostgreSQL RLS 同构但
   **不是真实 PostgreSQL**；新增的 5 项接线用例同样离线（mock），不产生真实 PG 证据。
 - **`docs/HANDOVER.md`（交接文档）**：面向接手本项目的下一个 agent 或新贡献者，
   目标是不追问即可开工。含：项目目标与三层定位、技术栈与六项拍板决策、
-  进度快照与 CI 实况、源码路径地图（19 个模块含行数）、产出归档索引、
+  进度快照与 CI 实况、源码路径地图（24 个模块含行数）、产出归档索引、
   剩余任务清单（11 项，各带优先级 / 依赖 / 验收标准 / 执行者）、5 条已知未决问题、
   12 条硬性红线（含「平台专属命令必须先判平台」「守卫必须经变异测试验证」
   「CI 类条目升 `Tested-real` 需连续 ≥2 次绿灯」）、环境要求与操作日志。
