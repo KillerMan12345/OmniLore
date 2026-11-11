@@ -9,8 +9,8 @@
 | 对应 commit | 见 `git log` 最新一条（本文数字以该 commit 为准） |
 | 版本 | `v0.3.0-alpha`（PEP 440：`0.3.0a0`） |
 | 公开仓库 | https://github.com/KillerMan12345/OmniLore |
-| 测试 | 186 项，0 failure / 0 error / 0 skip |
-| 追踪文件 | 84 个（`git ls-files` 现有 81 个 + 新增的 `omnilore/citation_guard.py` / `tests/test_citation_guard.py` / `tests/test_pdf_ingestion_real.py`；25 个 Python 源码 / 10 份 docs 文档 / 16 个 tests 文件 / 4 个 tools，其余 29 个为根配置、CI、n8n 与 sql 资源） |
+| 测试 | 202 项，0 failure / 0 error / 0 skip |
+| 追踪文件 | 96 个（`git ls-files` 现有 84 个 + 本批次新增 12 个：`omnilore/telemetry.py`、`tests/test_telemetry.py`、`tests/test_demo_full.py`、`README.en.md`、`docs/site/` 8 页；26 个 Python 源码 / 18 份 docs 文档 / 17 个 tests 文件 / 4 个 tools，其余 31 个为根配置、CI、n8n 与 sql 资源） |
 | CI | 7 个 job，其中 `windows-latest` 的 2 个**仍失败**（见 T1） |
 
 ---
@@ -25,7 +25,7 @@ git clone https://github.com/KillerMan12345/OmniLore.git && cd OmniLore
 python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
 python -m pip install -e ".[dev]"
 
-# 3. 确认基线绿（必须 186 项、0 skip）
+# 3. 确认基线绿（必须 202 项、0 skip）
 python -m unittest discover -s tests -p "test_*.py" -v
 
 # 4. 确认零 Key 端到端可用
@@ -140,7 +140,7 @@ ruff check omnilore tests tools
 | 跨平台 | `textio.py` 统一 LF，消除 CRLF 对账失败 | 生成文件 CRLF = 0 |
 | 零 Key 降级 | 无 Key 走 BM25；供应商故障也降级不抛异常 | 离线可跑 |
 | 笔记主权（R-16） | frontmatter 白名单可配（可整体关闭）、冲突副本落隐藏目录、`doc_id` 永不开 | 行为实测 |
-| 诚实标注（R-13） | 32 条能力四态标注 + 威胁模型公开页 + 19 个 Makefile 目标 | 守卫测试 |
+| 诚实标注（R-13） | 38 条能力四态标注 + 威胁模型公开页 + 19 个 Makefile 目标 | 守卫测试 |
 | 贡献入口（R-10a） | 6 条绕开 `engine.py` 的路径 + 6 套可统计 Issue 表单 + 自动打标 | — |
 | 审计证据包（R-05m） | `omnilore audit-bundle` 导出可带走的证据包 | 跨进程篡改实测 |
 | 21 条 RLS 策略注释 | 每条注明保护什么 / 依赖哪维 / 防什么 / 不覆盖什么 | 逻辑冻结摘要 |
@@ -149,16 +149,20 @@ ruff check omnilore tests tools
 | 平台收敛（R-11b） | 数据目录唯一来源 + arm64 CI job | arm64 已 3 次绿灯（#4/#5 连续），已达门槛升 `Tested-real` |
 | PostgreSQL 安全连接层 | 强制非超用户连接 + `SET LOCAL ROLE` + GUC fails closed | 真实 PG 人工验证 3 条 |
 
-### 3.2 CI 实况（Run #5，commit `effbb02` —— **8 个 check 全部通过**）
+### 3.2 CI 实况（截至 Run #13，commit `26c520b` —— **连续两次 success：#12 / #13**）
 
 | job | 状态 |
 |---|---|
 | test (ubuntu-latest, py3.11 / py3.12) | ✅ |
-| test (**windows-latest, py3.11 / py3.12**) | ✅ 已于 Run #5 转绿（T1 已解决） |
-| arm64 (ubuntu-24.04-arm, py3.12) | ✅ 累计 3 次绿灯（#2 / #4 / #5） |
+| test (**windows-latest, py3.11 / py3.12**) | ✅ 自 Run #5 起持续转绿（T1 已解决） |
+| arm64 (ubuntu-24.04-arm, py3.12) | ✅ 累计多次绿灯（#2 / #4 / #5 等） |
 | lint | ✅ |
 | DCO sign-off | ✅ |
-| **integration-rls（真实 PostgreSQL 16 + 探针）** | ✅ **3 条探针全部 PASS（exit 0）**，已多次绿灯 |
+| **integration-rls（真实 PostgreSQL 16 + 探针）** | ✅ **3 条探针全部 PASS（exit 0）**，持续绿灯 |
+
+**覆盖范围**：离线套件（Run #13 时为 186 项，本批次后为 202 项）+ ruff + 零密钥冒烟 +
+3 条真实 PG RLS 探针。**不覆盖**真实 PostgreSQL 业务数据面、真人验证或在线发布。
+本批次推送后触发的运行需维护者复核；CI 绿灯本身不是发布门禁 G2 / G3 的替代品。
 
 ### 3.3 真实 PostgreSQL 上的两类证据（**性质不同，别混用**）
 
@@ -173,20 +177,21 @@ ruff check omnilore tests tools
 
 ## 4. 重要文件路径地图
 
-### 4.1 源码（`omnilore/`，25 个文件）
+### 4.1 源码（`omnilore/`，26 个文件）
 
 | 文件 | 行数 | 职责 / 注意 |
 |---|---|---|
-| `engine.py` | 3773 | **全库最大**，主引擎 + 业务逻辑。已接入 Token 预算治理、二级分块下钻与防幻觉引用比对、`EVOLUTION_DAG` 资产与 `INSPECT_PLAN` / `VERIFY_CITATION` 治理动作，以及 `search_knowledge` 默认开启的自动引用巡检 |
+| `engine.py` | 3777 | **全库最大**，主引擎 + 业务逻辑。已接入 Token 预算治理、二级分块下钻与防幻觉引用比对、`EVOLUTION_DAG` 资产与 `INSPECT_PLAN` / `VERIFY_CITATION` 治理动作、`search_knowledge` 默认开启的自动引用巡检；`EVOLUTION_DAG` 不再把 `REVERTED` 伪造成反向因果边 |
 | `context_budget.py` | 169 | **理念一**：Token 预算治理、轻量字符估算、长代码块结构化折叠 |
 | `citation.py` | 118 | **理念二**：防幻觉事实引用比对、三态判定（`VERIFIED` / `PARTIALLY_VERIFIED` / `UNVERIFIED_OR_MISQUOTED`） |
 | `citation_guard.py` | 268 | 答案合成自动引用巡检：抽取引用片段、对未折叠证据块逐条比对、识别捏造与张冠李戴、输出告警；只新增报告字段 |
+| `telemetry.py` | 281 | D3 opt-in 匿名遥测：默认关闭、显式 consent、字段极简白名单、`--show` 完整 payload 自查、PII 键名拒绝、全局 kill switch；**无网络外发**（`transmit()` 是显式 no-op） |
 | `evolution_chain.py` | 174 | **理念三**：版本因果演化链 DAG 与 MRP 变更预审建议 |
 | `storage_contract.py` | 166 | **理念五**：最小存储后端抽象 `StorageBackend` Protocol 与能力声明 |
 | `audit_bundle.py` | 900 | 审计证据包导出 |
 | `bootstrap.py` | 691 | 首启引导、token 签发、**文件权限收紧**（Windows `icacls` 分支） |
 | `embedding_provider.py` | 446 | provider 抽象（4 种实现） |
-| `cli.py` | 729 | CLI：`bootstrap` / `demo` / `version` / `audit-bundle` / `plan` / `history` / `verify-citation`；含 `_hydrate_runtime_state()` 跨进程状态回填 |
+| `cli.py` | 964 | CLI：`bootstrap` / `demo`（含 `--full` 完整治理链路）/ `version` / `audit-bundle` / `plan` / `history` / `verify-citation` / `telemetry`；含 `_hydrate_runtime_state()` 跨进程状态回填与 opt-in 命令计数钩子 |
 | `mcp_stdio_server.py` | 433 | MCP stdio，7 个工具（**理念四**：区分 query 与 governance 分层并支持过滤）；`get_document_asset` 增加 `EVOLUTION_DAG` 枚举，`search_knowledge` 增加 `verify_citations` 开关 |
 | `parsers.py` | 359 | 多格式解析（纯函数，**新贡献者入手首选**） |
 | `pg_engine.py` | 362 | `PgDatabaseEngine`（PostgreSQL 后端，**业务路径未接入**） |
@@ -218,7 +223,9 @@ ruff check omnilore tests tools
 | `tools/mutation_check.py` | 变异测试工具。**必须副本模式**（历史上曾改坏活仓库） |
 | `Makefile` | 19 个目标（`help` + 17 个 `verify-*` + `test` + `lint`） |
 | `n8n/workflows/` | 3 条工作流 JSON（结构已验证，未真实导入运行） |
-| `tests/` | 15 个文件：186 项测试全部通过（0 skip） |
+| `docs/site/` | 8 页文档站（概览 / 快速上手 / 核心概念 / MCP 工具 / 治理动作 / 证据与完整性 / 架构与边界 / 贡献指南）；纯 Markdown，未接站点生成器 |
+| `README.en.md` | 英文概览，与中文 README 共用四态口径与证据边界 |
+| `tests/` | 17 个文件：202 项测试全部通过（0 skip） |
 
 ### 4.3 不随公开仓库分发的内容（已 `.gitignore`）
 
@@ -252,6 +259,19 @@ ruff check omnilore tests tools
 
 优先级：**P0** 阻塞发布或违反红线 ｜ **P1** 首发窗口内 ｜ **P2** 首发后 ｜ **Q2** 下季度
 执行者：**A** = agent 可自主完成 ｜ **M** = 维护者（需真人 / 凭证 / 出境）｜ **A+M** = 需配合
+
+> **当前状态总览**（自动化可验证的编码项已收口）
+>
+> | 状态 | 任务 |
+> |---|---|
+> | ✅ 已完成 | T1 / T2 / T3 / T4 / T5 / T11、理念一至五、方向二（自动引用巡检）/ 方向四（真实 PDF 入库）、R-05f 完整 Demo、R-09 文档站与双语 README、R-12 D3 匿名遥测 |
+> | ⏳ 必须真人 / 外部动作 | **T6** hero GIF（必须真实录屏，不得用生成素材）；**T7** 第 0 波封闭验证（10–20 人 × 30 分钟 1v1、主持人静默，**G3 公开首发的 P0 阻塞，当前样本量 0**）；**T8** 打 `v0.3.0-alpha` tag（G2 要求维护者手动跑 demo 并存档输出） |
+> | ⏳ 按排期 / 条件未做 | **R-06** Policy-aware MCP（Q2；会把工具口径从 7 改到 11，需与首发范围一起评审）、**R-07b** Obsidian Bridge 后半（Q2）、**R-10b** good first issue（需在 GitHub 创建公开 Issue，属不可撤回的外部写操作）、**R-15e** `engine.py` 拆分（贡献者 ≥10 人的触发条件未满足，按既定决策不做） |
+> | ⚠️ 核心未决 | 业务数据仍跑在内存仿真引擎，**PG 未承载业务读写**；D6 已把多存储后端方向冻结到首发后，文档如实降级，不得宣称持久化 |
+>
+> **自动化验证已完成**：全量 202 项离线用例 0 failure / 0 error / 0 skip；ruff、LF/CRLF、
+> 诚实口径与四态统计守卫、六处数字一致性、跨进程 CLI 冒烟全部通过。
+> 上表 ⏳ 项不是「代码没写完」，而是需要真人、真实录屏、发布决策或外部平台写操作。
 
 ### T1（P0，A）修 `windows-latest` 的 2 个 CI job —— **已解决，并已由 CI 确认（Run #5 8/8 全绿）**
 
@@ -354,7 +374,7 @@ ruff check omnilore tests tools
 
 **仍未验证（不要写成已修好）**：**没有推送、没有重新跑 CI**。T1 的验收条件
 「推送后 CI 全绿」尚未达成，本机证据只能证明「复现 + 修复 + 守卫有效」。
-维护者推送后请确认 `windows-latest` 两个 job 转绿且 186 项 0 skip。
+维护者推送后请确认 `windows-latest` 两个 job 转绿且 202 项 0 skip。
 另外：若 CI 仍红，`test` job 新增的 `Diagnostics (only on failure)` 步骤会自动把
 账户、临时目录、`icacls` ACL 一次性打进日志 —— 下一轮不必再从网页里捞日志。
 
@@ -398,7 +418,7 @@ ruff check omnilore tests tools
 - **验收**：
   1. 业务读写落 PostgreSQL；RLS 在应用路径上仍生效 —— **必须成对验证**：未授权 0 行 **且** 授权后同一条 ≥1 行（后者排除「表本来就是空的」假阳性）
   2. 不设 `DATABASE_URL` 时行为与现在完全一致（仍内存引擎），用测试钉住
-  3. 186+ 项全绿
+  3. 202+ 项全绿
   4. **只有以上全部成立**，文档才允许改写「持久化」口径
 
 ### T4（P1，A）`docker-compose.yml` 角色同名隐患 —— **已通过真实 Docker 验收（2026-10-26）**
@@ -417,12 +437,16 @@ ruff check omnilore tests tools
   5. 默认 `DATABASE_URL` 置空后 `mcp-gateway` 实跑 `Up`、`Restarts=0`（日志：自动引导 + 降级 `keyword_only`）——「原默认值必崩」这条已实证反转。
 - **仍未验（不要写成已验证）**：① 未用**非超用户应用角色** `omnilore_app` 跑探针（③ 用的是脚本文档允许的 `postgres` + 脚本内 `SET LOCAL ROLE`，P2=0 行本身证明 `SET ROLE` 真的掉了超用户特权）；② 未验 n8n `integrations` profile；③ 未推送、未重跑 CI。
 - **维护者仍需注意**：**旧数据卷不会自动修正** —— 已存在的卷里 `omnilore_migrator` 仍是 initdb 建的超用户，且 initdb 不会重跑 `sql/001`（所以 fail-closed 块对旧卷**无效**）。升级时必须 `docker compose down -v` 重建。
-- **T11 的「清理更名遗留 docker 资源」实测结论**：`contexthub_pgdata` 卷与 `contexthub_default` 网络**在本机已不存在**（现存卷为裸名 `pgdata` + 一个匿名卷，网络只有 bridge/host/none）。`pgdata` 里是什么未确认，**先别删**。
+- **T11 的「清理更名遗留 docker 资源」实测结论**：更名前旧名的卷与网络**在本机已不存在**（WSL2 实测现存卷为 `pgdata` / `t3verify_pgdata`，网络列表无旧名）。`pgdata` 里是什么未确认，**先别删**。
 - **口径提醒**：`omnilore_migrator` 在新卷里已不是超用户，但「它无法降权」这条**对既有旧卷仍然成立**；文档里凡涉及此点的表述已加限定。
 
-### T5（P1，M）开启 Private vulnerability reporting
+### T5（P1，M）开启 Private vulnerability reporting —— **已核实完成**
 
-Settings → Security。`SECURITY.md` 的首选披露渠道依赖它；不开则漏洞报告只能走公开 Issue。
+`SECURITY.md` 的首选披露渠道依赖它。经仓库 API 实测
+`GET /repos/KillerMan12345/OmniLore/private-vulnerability-reporting` 返回 `{"enabled": true}`；
+同一响应还显示 `secret_scanning` 与 `secret_scanning_push_protection` 均为 `enabled`。
+`dependabot_security_updates` 仍为 `disabled`（不在本任务范围内）。
+故无需维护者再进 Settings → Security 手动开启。
 
 ### T6（P1，M）hero GIF 素材
 
@@ -439,21 +463,30 @@ G2 门禁要求先手动跑一次 demo 并存档输出。
 
 ### T9（P2，A）首发后工程项
 
-- R-05f 完整 Demo（RECLASSIFY / REVERT_VERSION 全链路，2.5 人日）
-- R-09 文档站 8 页 + 中英双语 README（4.0 人日）
-- R-10b 10–20 个 good first issue（1.0 人日）
+- ✅ **R-05f 完整 Demo**：`omnilore demo --full` 已实现双版本 → `REVERT_VERSION` →
+  `RECLASSIFY` → DAG/检索复核，`tests/test_demo_full.py` 4 项离线用例含跨进程读取与
+  磁盘 SHA-256 对账（`Implemented`）。顺带修掉 `EVOLUTION_DAG` 伪造反向 `REVERT` 因果边的问题。
+- ✅ **R-09 文档站 8 页 + 中英双语 README**：`docs/site/` 8 页 + `README.en.md` 已入库，
+  能力矩阵与 README 各补 1 条 `Implemented`（`Implemented`，纯文档产出，未接站点生成器）。
+- ⏳ **R-10b 10–20 个 good first issue**：**需维护者在 GitHub 上创建公开 Issue**（外部平台写操作，
+  自动化批量开 issue 属于不可撤回的公开副作用，不擅自执行）。建议用 `.github/ISSUE_TEMPLATE/`
+  的表单逐条创建，主题可从 `docs/site/contributing.md` 的「从哪里入手」表派生。
 
 ### T10（Q2，A）
 
-- R-06 Policy-aware MCP（工具 7 → 11，3.5 人日）
-- R-07b Obsidian Governance Bridge 后半（5.0 人日）
-- R-12 匿名遥测（4.0 人日，D3 兑现）
-- R-15e `engine.py` 拆分（6.5 人日，**条件触发**：贡献者 ≥10 人才做）
+- ⏳ **R-06 Policy-aware MCP（工具 7 → 11）**：按排期留到 Q2。它会改变全仓「MCP 工具恒 7 个」
+  的口径与相关守卫，需与首发窗口的范围决策一起评审，不在本批次动。
+- ⏳ **R-07b Obsidian Governance Bridge 后半**：按排期留到 Q2。
+- ✅ **R-12 匿名遥测（D3 兑现）**：`omnilore/telemetry.py` + `omnilore telemetry` 已实现
+  D3 的 6 条硬约束，`tests/test_telemetry.py` 12 项离线用例（`Implemented`）。
+  **边界**：本版本无网络外发，`transport.implemented` 恒为 `false`。
+- ⏳ **R-15e `engine.py` 拆分（6.5 人日，条件触发：贡献者 ≥10 人才做）**：触发条件未满足，
+  按既定决策**不做**（最小变更原则）。
 
-### T11（P2，A）收尾杂项 —— **2/3 已完成，1 项需维护者**
+### T11（P2，A）收尾杂项 —— **已全部完成**
 
 - ✅ **章节重编号**：`docs/ROADMAP_STATUS.md` 原为 1–4 后直接跳 7（缺 5、6）。已重编号为 1–7（原 `7.x` → `5.x`、`8` → `6`、`9` → `7`），正文 5 处「见第 7 节」同步改为「见第 5 节」。
-- ⏳ **清理更名遗留 docker 资源**（需维护者；本机无 docker）：`contexthub_pgdata` 卷与 `contexthub_default` 网络仍是旧名。先确认没有容器在用，再 `docker volume rm contexthub_pgdata`、`docker network rm contexthub_default`。**与 T4 的「旧卷必须重建」是同一件事的两次操作，建议一起做。**
+- ✅ **更名遗留 docker 资源已不存在，无需清理**：在 WSL2 中只读复核（`docker volume ls` / `docker network ls` / `docker ps -a`），更名前旧名的卷与网络均已消失，现存卷只有 `pgdata` 与 `t3verify_pgdata`；因此原先写下的两条清理命令已无对象、不再需要执行。现有 `omnilore-postgres` 容器按维护者此前「保留旧容器」的决定原样保留，**未执行任何删除**。
 - ✅ **守卫覆盖缺口**：`test_every_make_target_mentioned_in_docs_exists` 已从「只扫 README + 状态矩阵」扩到「扫描全部公开 Markdown」（`rglob` + 排除 `.gitignore` 目录，并要求至少发现 8 份文档，防止扫描范围失效后退化成空转）。两类合法的非目标写法已显式排除：通配 `make verify-*`、占位 `make <目标>`；纯版本号（如 `GNU Make 4.3`）也不会被误判。**变异验证 3/3 变红**：在 `ROADMAP_STATUS.md` / `CHANGELOG.md` / `THREAT_MODEL.md` 分别写入一个不存在的 `make` 目标，测试均红。
 - **顺带修掉的一个已公开错误口径**：`ROADMAP_STATUS.md` 第 7 节（现第 7 节「诚实口径」）写着「`Implemented` 11 条、`Tested-real` 8 条」，与矩阵实际的 **10 / 9** 不符 —— 这正是「四态计数守卫只查 README + CHANGELOG、不查 ROADMAP」留下的缺口。已改正数字，并把该守卫扩到 ROADMAP（`test_readme_changelog_and_roadmap_report_the_same_statistics`）。
 

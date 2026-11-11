@@ -1,5 +1,7 @@
 # OmniLore
 
+[简体中文](README.md) · [English](README.en.md) · [文档站](docs/site/index.md)
+
 **AI 原生可审计知识中枢** ｜ *One auditable knowledge base, for every agent.*
 
 > ## `v0.3.0-alpha`
@@ -303,6 +305,7 @@ omnilore/
 │   ├── runtime_index.py                              # **R-05m** 运行时索引（audit-bundle 跨进程的派生物）
 │   ├── parsers.py                                    # 多格式解析器（纯函数，好入手）
 │   ├── citation_guard.py                             # 新增：答案合成自动引用巡检（默认开启，Implemented，离线验证）
+│   ├── telemetry.py                                  # 新增：opt-in 匿名遥测（默认关闭 / --show 自查 / 无网络外发，Implemented，离线验证）
 │   ├── ops_manager.py                                # 备份/恢复/索引重建/一致性对账
 │   ├── daemons.py                                    # Outbox 恢复与 Obsidian 监听守护
 │   ├── http_worker_api.py                            # 供 n8n 调用的内部 HTTP 网关
@@ -311,7 +314,7 @@ omnilore/
 │   ├── verify_rls_pg.py                              # 真实 PostgreSQL RLS 探针（缺环境即「未验证」）
 │   ├── verify_rls_app_role.py                        # 用**应用角色**在真实 PG 上复现 RLS 三条（需真实 PG + 应用角色）
 │   └── verify_audit_bundle.py                        # 证据包探针：改 1 字节必须 mismatch + exit 3
-└── tests/                                            # 端到端验收测试，共 186 个用例（0 skip）
+└── tests/                                            # 端到端验收测试，共 202 个用例（0 skip）
     ├── _platform_support.py                          # 新增：宿主能力探测（symlink → junction 回退）
     ├── test_omnilore_phase0_acceptance.py           # Phase 0/1 专项（安全/RLS/幂等/恢复/模型门禁）10 项
     ├── test_full_omnilore_suite.py                  # Phase 0~3 + Ops 综合验收 9 项
@@ -326,7 +329,9 @@ omnilore/
     ├── test_evolution_chain.py                      # 理念三：知识因果演化链与 MRP 变更提议 3 项
     ├── test_mcp_dag_and_plan_actions.py              # 新增：MCP 扩展动作（EVOLUTION_DAG / INSPECT_PLAN / VERIFY_CITATION）3 项（Implemented，离线验证）
     ├── test_citation_guard.py                        # 答案合成自动引用巡检、捏造引用告警、折叠预算不误判 10 项（Implemented，离线验证）
-    └── test_pdf_ingestion_real.py                    # 真实 PDF 字节流、双解析库回退、入库与 CAS 哈希对账 5 项（Implemented，离线验证；真实第三方解析库）
+    ├── test_pdf_ingestion_real.py                    # 真实 PDF 字节流、双解析库回退、入库与 CAS 哈希对账 5 项（Implemented，离线验证；真实第三方解析库）
+    ├── test_telemetry.py                             # opt-in 匿名遥测 D3 六条硬约束、PII 拒绝与全局开关 12 项（Implemented，离线验证）
+    └── test_demo_full.py                             # 完整治理 Demo 端到端、跨进程 DAG、CAS 对账与因果边诚实化 4 项（Implemented，离线验证）
 ```
 
 ---
@@ -338,7 +343,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 # 等价：make verify
 ```
 
-**186 个测试用例**，全部离线运行，不需要数据库或 API Key：
+**202 个测试用例**，全部离线运行，不需要数据库或 API Key：
 
 | 测试文件 | 数量 | 覆盖 |
 |---|---|---|
@@ -356,8 +361,10 @@ python -m unittest discover -s tests -p "test_*.py" -v
 | `test_mcp_dag_and_plan_actions.py` | 3 项 | EVOLUTION_DAG 资产、INSPECT_PLAN 变更预审、VERIFY_CITATION 引用核验（Implemented，离线验证） |
 | `test_citation_guard.py` | 10 项 | 答案合成默认自动引用巡检、张冠李戴检测、可显式关闭、折叠预算不产生假阴性（Implemented，离线验证） |
 | `test_pdf_ingestion_real.py` | 5 项 | 构造规范真实 PDF 字节流（2 页 + xref），验证 `pdfplumber` → `pypdf` 回退、入库与 CAS SHA-256 对账（Implemented，离线验证；真实第三方解析库） |
+| `test_telemetry.py` | 12 项 | D3 六条硬约束：默认关闭零写入、显式 consent、`--show` 完整 payload、PII 键名拒绝、写入失败静默、`OMNILORE_TELEMETRY=0` 优先（Implemented，离线验证） |
+| `test_demo_full.py` | 4 项 | 完整治理 Demo 端到端、文本模式步骤、跨进程 `history` 读 DAG、磁盘 SHA-256 对账与「不伪造 REVERT 因果边」（Implemented，离线验证） |
 
-> ⚠️ **这 186 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
+> ⚠️ **这 202 个测试全部离线运行：业务用例跑在 `omnilore.engine.RLSDatabaseEngine`（内存仿真引擎）上；新增的 `test_pg_runtime_wiring.py` 用 mock 钉住 PG 运行时接线，不连真实 PG。**
 > 它与 PostgreSQL RLS **同构**，但**不是真实 PostgreSQL** —— 所以它们证明的是**逻辑正确性**，
 > 不等于「真实 PG 上的 RLS 已验证」。真实 PG 的 RLS 相关能力一律标注 `Simulated` ——
 > **两条例外**（都在真实 PostgreSQL 16.15 上取过证，但**证据性质不同**）：
@@ -378,7 +385,7 @@ OmniLore 支持 **x86_64 与 arm64** 两种 CPU 架构，验证方式不同，�
 | 架构 | 状态 | 验证方式 |
 |---|---|---|
 | `x86_64`（Linux / Windows；macOS Intel 为兼容目标） | `Tested-real`（Linux / Windows） | CI 离线矩阵为 `ubuntu-latest` × `windows-latest` × Python 3.11/3.12；当前没有 macOS job，**不得把 macOS 写成已验证** |
-| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Tested-real` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 186 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。边界：仅覆盖离线套件 + `ruff` + 零密钥冒烟，不覆盖真实 PG 业务数据面 |
+| `arm64`（Apple Silicon / AWS Graviton / 树莓派 4+） | `Tested-real` | `.github/workflows/ci.yml` 的 **`arm64`** job（`ubuntu-24.04-arm`，GitHub 公共仓库免费 runner）跑**同一套 202 个离线用例** + `ruff` + bootstrap/demo 冒烟。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。边界：仅覆盖离线套件 + `ruff` + 零密钥冒烟，不覆盖真实 PG 业务数据面 |
 
 > 为什么 arm64 单独一个 job 而不是并进矩阵：`integration-rls` 刻意留在 x86（真实 PostgreSQL
 > service container）。在 arm64 上同时引入「新架构 + 新服务容器」两个变量，一旦红了分不清是谁的锅。
@@ -425,7 +432,7 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 > | `Planned` | 尚未实现，或仅有模板、未经过自动化验证 |
 >
 > **当前统计（三处一致，由测试守护）：**
-> `Implemented` 13 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **36 条**。
+> `Implemented` 16 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 0 条 —— 合计 **38 条**。
 >
 > **测试跑在什么上面（重要）**：本项目的绝大多数业务用例都跑在
 > `omnilore.engine.RLSDatabaseEngine`（**内存仿真引擎**）上 —— 它与 PostgreSQL RLS
@@ -524,7 +531,9 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 
 ### 其他边界明确的能力
 
-- **[Planned]** **opt-in 匿名遥测**：决策已接受，实现排期在 Q2（见 [`docs/DECISIONS.md`](docs/DECISIONS.md)）。
+- **[Implemented]** **opt-in 匿名遥测**：D3 的 6 条硬约束均有离线用例 —— 严格 opt-in（只有 `omnilore telemetry --enable` 能开启）、默认关闭（全新安装 / `bootstrap` / `demo` 写零遥测字节）、字段极简（仅子命令 / 降级 / 检索模式的匿名聚合计数）、`omnilore telemetry --show` 打印完整原始 payload 并由递归键名白名单拒绝 PII、写入失败静默放弃、`OMNILORE_TELEMETRY=0` 全局优先。**边界**：本版本**没有网络外发**，`transport.implemented` 恒为 `false`，`transmit()` 是显式 no-op；因此它不是「已上线的遥测服务」，不标 `Tested-real`（决策见 [`docs/DECISIONS.md`](docs/DECISIONS.md)）。
+- **[Implemented]** **完整治理 Demo（双版本 / 撤销 / 重分类）**：`omnilore demo --full --json` 在同一版本链提交 v1.0 / v2.0，执行 `REVERT_VERSION` 恢复 v1.0、执行 `RECLASSIFY` 迁移分类，再用 `EVOLUTION_DAG` 与一次全新检索复核；每步断言真实状态转换，不符即 `DEMO_INTEGRITY_FAILED` 非零退出。4 项离线用例含跨进程 `history` 读取与磁盘 SHA-256 逐字节对账。**边界**：跑在内存仿真引擎上，不是真实 PG 数据面证据；可复跑素材不等于真人验证。
+- **[Implemented]** **文档站 8 页与中英双语 README**：[`docs/site/`](docs/site/index.md) 下 8 页（概览 / 快速上手 / 核心概念 / MCP 工具 / 治理动作 / 证据与完整性 / 架构与边界 / 贡献指南）+ [`README.en.md`](README.en.md)；链接均指向入库文件，能力描述沿用四态口径。**边界**：纯文档产出，未接入任何站点生成器或在线托管，不标 `Tested-real`。
 - **[Implemented]** **n8n 工作流（3 条）**：JSON 结构、敏感凭据缺失与内部 Worker 网关已有离线自动化用例；**尚未在真实 n8n 实例导入、启动和运行**，因此不标 `Tested-real`。
 
 > 完整功能矩阵 `FR-01`~`FR-19` 与决议 `D-01`~`D-13` 见
@@ -578,7 +587,7 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 | `DATABASE_URL` | 容器编排会转发 | PostgreSQL 连接串；设置后 MCP 会建立**安全 PG 连接层**（连接角色必须非超级用户、无 `BYPASSRLS`、是策略角色成员，否则拒绝启动）。但它**尚未**接入业务数据层 —— 业务读写仍走内存引擎，**不能据此认定业务状态已持久化** |
 | `OMNILORE_PROTECTED_FRONTMATTER` | 可选 | 受保护的 frontmatter 字段白名单（逗号分隔）。`none` = **整体关闭保护**（`doc_id` 除外，它是身份锚点）。默认 9 个全保护 |
 | `OMNILORE_CONFLICT_DIR` | 可选 | 冲突副本隐藏目录，默认 `.omnilore/conflicts`（点号开头 = **Obsidian 默认忽略**；Windows 资源管理器仍可见，NTFS 不因点号隐藏目录）。必须是 vault 内相对路径 |
-| `OMNILORE_TELEMETRY` | 可选 | 遥测开关，默认 `0`（本版本尚未实现遥测） |
+| `OMNILORE_TELEMETRY` | 可选 | 全局遥测开关：设为 `0` 时一次性关闭，优先级高于已保存的 consent（`Implemented`，仅本地匿名计数；本版本无网络外发）。开启需显式执行 `omnilore telemetry --enable` |
 
 ---
 
@@ -593,7 +602,8 @@ python tools/verify_rls_app_role.py   # 用**应用角色**在真实 PG 上复�
 | [`docs/02_Architecture_and_Engineering_Design_v2.3.md`](docs/02_Architecture_and_Engineering_Design_v2.3.md) | 后端/安全：权限交集、`(space_id, category)` RLS、15 张表、Saga、同步协议（RLS 行为在内存引擎上验证，标 `Simulated`；真实 PG 的**两条例外**见 `docs/FEATURE_STATUS.md` 第 6 / 6.1 节 —— ①已由 CI 的 `integration-rls` job 持续验证、②为人工一次性且**非 CI**；两者都**不等于**业务运行时已接入 PG） |
 | [`docs/03_User_Stories_and_Scenarios_v2.3.md`](docs/03_User_Stories_and_Scenarios_v2.3.md) | 角色化的用户故事与 `Given/When/Then` 验收标准 |
 | [`docs/04_Test_Plan_and_Verification_Report_v2.3.md`](docs/04_Test_Plan_and_Verification_Report_v2.3.md) | QA/审计：追踪矩阵与**内存仿真的边界** |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | 想了解许可证、版本、遥测（`Planned`）、8 周窗口、项目命名与多存储后端冻结这六项拍板 |
+| [`docs/site/index.md`](docs/site/index.md) | **按任务找文档**：8 页文档站（快速上手 / 核心概念 / MCP 工具 / 治理动作 / 证据与完整性 / 架构与边界 / 贡献指南）（`Implemented`，纯文档产出） |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | 想了解许可证、版本、遥测（`Implemented`，仅本地计数 / 无网络外发）、8 周窗口、项目命名与多存储后端冻结这六项拍板 |
 | [`docs/HANDOVER.md`](docs/HANDOVER.md) | **要接手继续开发**：上下文、剩余任务清单（含验收标准）、硬性红线、环境事实与操作日志 —— 供下一个 agent 或新贡献者直接开工 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 每次版本变更了什么 |
 
@@ -655,7 +665,7 @@ git commit -s -m "fix(storage): ..."   # -s 追加 DCO Signed-off-by，必填
    事务里；我们用 Outbox 补偿 + `reconcile_consistency` 对账把不一致**显式暴露**，
    而不是假装原子提交。详见 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)。
 5. **向量召回依赖外部供应商。** 零 Key 时降级为关键词检索，语义能力下降，但不会失败。
-6. **遥测尚未实现。** 决策已接受 opt-in 匿名遥测，实现排期在 Q2（见 `docs/DECISIONS.md`）。
+6. **遥测不含网络外发（`Implemented`，仅本地匿名计数）。** D3 的 opt-in 匿名遥测只实现本地计数与 `omnilore telemetry --show` 自查，默认关闭，`transport.implemented` 恒为 `false`；本版本没有上传端点、没有 HTTP 客户端、没有后台进程（见 `docs/DECISIONS.md`）。
 7. **`engine.py` 的架构级重构排期在 Q2 之后**，本期刻意不做（最小变更原则）。
 8. **`audit-bundle` 的跨进程能力依赖 `ops/index/` 运行时索引，而索引是派生物。**
    默认内存引擎不跨进程持久化，所以入库时会额外把「文档 ↔ 原始资产」最小映射写到

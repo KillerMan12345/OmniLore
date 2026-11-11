@@ -42,6 +42,15 @@ from .embedding_provider import EmbeddingConfigurationError
 from .engine import OmniLoreEngine, OmniLoreMCPGateway, OmniLoreError, ReviewAction, RLSDatabaseEngine
 from .pathutil import resolve_data_dir
 from .runtime_index import load_runtime_index
+from .telemetry import (
+    TELEMETRY_ENV,
+    TRANSPORT_UNAVAILABLE,
+    build_payload,
+    consent_path,
+    is_enabled,
+    record_command,
+    set_consent,
+)
 from .textio import pin_utf8_std_streams
 
 # The sample knowledge used by `omnilore demo`. Kept in-repo so the demo never
@@ -264,6 +273,171 @@ async def _async_demo(args: Namespace) -> Dict[str, Any]:
     return {"space_id": space_id, "doc_id": doc_id, "hits": len(hits), "found_demo_document": found}
 
 
+FULL_DEMO_VERSION_KEY = "vk_demo_governance"
+FULL_DEMO_RECLASSIFY_CATEGORY = "02_Life"
+
+
+async def _demo_ingest_version(
+    gateway: OmniLoreMCPGateway,
+    token: str,
+    *,
+    space_id: str,
+    category: str,
+    version_label: str,
+    content: str,
+    filename: str,
+) -> Dict[str, Any]:
+    """Ingest one version into a *fixed* series, approving it if routing asks for review."""
+    ingest = await gateway.ingest_document_or_file(
+        token,
+        content_bytes=content.encode("utf-8"),
+        filename=filename,
+        target_space_id=space_id,
+        target_category=category,
+        version_key=FULL_DEMO_VERSION_KEY,
+        version_label=version_label,
+    )
+    task = ingest["task"]
+    doc_id = task.get("result_doc_id") or task.get("doc_id")
+    if task["task_state"] == "NEEDS_REVIEW":
+        approved = await gateway.review_and_fix_knowledge(
+            token,
+            action=ReviewAction.APPROVE_REVIEW,
+            target_id=task["task_id"],
+            payload={"version_key": FULL_DEMO_VERSION_KEY, "version_label": version_label},
+        )
+        doc_id = approved.get("result_doc_id") or doc_id
+    if not doc_id:
+        raise OmniLoreError("DEMO_INTEGRITY_FAILED", f"{version_label} did not reach a published doc_id")
+    return {"doc_id": doc_id, "task_state": task["task_state"]}
+
+
+async def _async_full_demo(args: Namespace) -> Dict[str, Any]:
+    """R-05f: the complete governance walkthrough (R-05f / T9).
+
+    Two versions of one document series are committed, the series is reverted,
+    the restored current version is reclassified, and the result is verified by
+    both a causal-DAG asset read and a fresh search.  Every step asserts a real
+    state transition; a broken link fails the demo instead of printing a
+    reassuring summary.
+    """
+    data_dir = resolve_data_dir(args.data_dir)
+    engine = OmniLoreEngine(data_dir)
+    gateway = OmniLoreMCPGateway(engine)
+    result = ensure_bootstrapped(engine, data_dir, token=args.token, space_id=args.space_id)
+    space_id = args.space_id or result.space_id
+    token = args.token or result.raw_token
+    category = args.category
+
+    _print()
+    _print("=" * 68)
+    _print("OmniLore 完整治理 Demo：双版本 → 撤销 → 重分类 → 复核")
+    _print("=" * 68)
+    _print(f"  数据目录  : {data_dir}")
+    _print(f"  目标空间  : {space_id}")
+    _print(f"  版本链    : {FULL_DEMO_VERSION_KEY}")
+    _print()
+
+    v1_text = (
+        "# 网关设计规范 v1\n\n"
+        "## 1. 超时策略\n\n"
+        "系统采用高可用分布式架构，单节点请求超时设置为 500ms。\n\n"
+        "## 2. 认证协议\n\n"
+        "客户端必须使用 HMAC-SHA256 签名传输请求头。\n"
+    )
+    v2_text = (
+        "# 网关设计规范 v2\n\n"
+        "## 1. 超时策略\n\n"
+        "系统采用高可用分布式架构，单节点请求超时调整为 800ms。\n\n"
+        "## 2. 认证协议\n\n"
+        "客户端必须使用 HMAC-SHA256 签名传输请求头。\n\n"
+        "## 3. 限流降级\n\n"
+        "超出配额时返回 429 并启用本地缓存兜底。\n"
+    )
+
+    _print("[1/5] 收录 v1.0")
+    v1 = await _demo_ingest_version(
+        gateway, token, space_id=space_id, category=category,
+        version_label="v1.0", content=v1_text, filename="governance_spec.md",
+    )
+    _print(f"      doc_id = {v1['doc_id']}  ({v1['task_state']})")
+
+    _print("[2/5] 收录 v2.0（同一版本链）")
+    v2 = await _demo_ingest_version(
+        gateway, token, space_id=space_id, category=category,
+        version_label="v2.0", content=v2_text, filename="governance_spec.md",
+    )
+    if v2["doc_id"] == v1["doc_id"]:
+        raise OmniLoreError("DEMO_INTEGRITY_FAILED", "v2.0 reused the v1.0 doc_id; no version chain was created")
+    dag_before = await gateway.get_document_asset(token, doc_id=v2["doc_id"], asset_type="EVOLUTION_DAG")
+    series_id = dag_before["series_id"]
+    if dag_before["total_versions"] < 2:
+        raise OmniLoreError("DEMO_INTEGRITY_FAILED", "causal DAG does not contain both committed versions")
+    _print(f"      doc_id = {v2['doc_id']}  series = {series_id}")
+    _print(f"      因果链节点数 = {dag_before['total_versions']}")
+
+    _print("[3/5] REVERT_VERSION：撤销 v2.0，恢复 v1.0 为当前版本")
+    reverted = await gateway.review_and_fix_knowledge(
+        token,
+        action=ReviewAction.REVERT_VERSION,
+        target_id=series_id,
+        payload={"expected_current_doc_id": v2["doc_id"], "rollback_to_doc_id": v1["doc_id"]},
+    )
+    if reverted["current_doc_id"] != v1["doc_id"]:
+        raise OmniLoreError("DEMO_INTEGRITY_FAILED", "REVERT_VERSION did not restore v1.0 as current")
+    _print(f"      当前版本 = {reverted['current_doc_id']}  revision = {reverted['revision_number']}")
+
+    _print(f"[4/5] RECLASSIFY：把恢复后的文档迁到 {FULL_DEMO_RECLASSIFY_CATEGORY}")
+    reclassified = await gateway.review_and_fix_knowledge(
+        token,
+        action=ReviewAction.RECLASSIFY,
+        target_id=v1["doc_id"],
+        payload={"new_space_id": space_id, "new_category": FULL_DEMO_RECLASSIFY_CATEGORY},
+    )
+    if reclassified["category"] != FULL_DEMO_RECLASSIFY_CATEGORY:
+        raise OmniLoreError("DEMO_INTEGRITY_FAILED", "RECLASSIFY did not update the category")
+    _print(f"      category = {reclassified['category']}  revision = {reclassified['content_revision']}")
+    _print(f"      wiki SHA-256 = {reclassified['file_hash'][:16]}…")
+
+    _print("[5/5] 复核：DAG 拓扑 + 检索当前版本")
+    dag_after = await gateway.get_document_asset(token, doc_id=v1["doc_id"], asset_type="EVOLUTION_DAG")
+    search = await engine.search_knowledge(token, "网关超时 500ms", top_k=args.top_k)
+    hits = search.get("results", [])
+    found = v1["doc_id"] in {h.get("doc_id") for h in hits}
+    _print(f"      DAG 节点数 = {dag_after['total_versions']}；检索命中 = {len(hits)}；命中当前版本 = {found}")
+    if not dag_after["ascii_graph"].strip():
+        raise OmniLoreError("DEMO_INTEGRITY_FAILED", "causal DAG rendered an empty lineage")
+
+    payload: Dict[str, Any] = {
+        "space_id": space_id,
+        "series_id": series_id,
+        "version_key": FULL_DEMO_VERSION_KEY,
+        "doc_v1": v1["doc_id"],
+        "doc_v2": v2["doc_id"],
+        "versions_before_revert": dag_before["total_versions"],
+        "current_doc_id_after_revert": reverted["current_doc_id"],
+        "series_revision_after_revert": reverted["revision_number"],
+        "category_after_reclassify": reclassified["category"],
+        "wiki_sha256_after_reclassify": reclassified["file_hash"],
+        "versions_after_revert": dag_after["total_versions"],
+        "ascii_lineage": dag_after["ascii_graph"],
+        "search_hits": len(hits),
+        "found_current_document": found,
+    }
+
+    if args.json:
+        _print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+    else:
+        _print()
+        _print("  版本因果拓扑：")
+        for line in dag_after["ascii_graph"].splitlines():
+            _print(f"      {line}")
+        _print()
+        _print("  ✅ 完整治理链路通过：双版本提交 → 撤销回滚 → 重分类 → DAG/检索复核。")
+        _print()
+    return payload
+
+
 async def _async_audit_bundle(args: Namespace) -> int:
     """导出证据包并返回进程退出码（R-05m）。
 
@@ -332,6 +506,38 @@ def _cmd_version(_args: Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_telemetry(args: Namespace) -> int:
+    """Inspect / change opt-in telemetry consent and self-audit the raw payload (D3)."""
+    data_dir = resolve_data_dir(args.data_dir)
+    if args.enable or args.disable:
+        try:
+            set_consent(data_dir, enabled=bool(args.enable))
+        except Exception as exc:
+            _print_err(f"无法写入遥测开关状态：{type(exc).__name__}: {exc}")
+            return EXIT_ERROR
+
+    payload = build_payload(data_dir)
+    if args.show:
+        _print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return EXIT_OK
+
+    _print()
+    _print("=" * 68)
+    _print("OmniLore 匿名遥测（严格 opt-in，默认关闭）")
+    _print("=" * 68)
+    _print(f"  当前状态    : {'已开启' if is_enabled(data_dir) else '关闭（默认）'}")
+    _print(f"  全局开关    : {TELEMETRY_ENV}=0 一次性关闭，优先级最高")
+    _print("  采集字段    : 子命令计数 / 降级次数 / 检索模式计数（仅匿名聚合）")
+    _print(f"  外发        : 未实现（{TRANSPORT_UNAVAILABLE}，本版本不上传任何数据）")
+    _print(f"  状态文件    : {consent_path(data_dir)}（仅显式开启后生成）")
+    _print()
+    _print("  自查完整 payload : omnilore telemetry --show")
+    _print("  显式开启          : omnilore telemetry --enable")
+    _print("  随时关闭          : omnilore telemetry --disable")
+    _print()
+    return EXIT_OK
+
+
 def _run_bootstrap(args: Namespace) -> int:
     """Execute the `bootstrap` sub-command and return a process exit code."""
     asyncio.run(_async_bootstrap(args))
@@ -340,7 +546,10 @@ def _run_bootstrap(args: Namespace) -> int:
 
 def _run_demo(args: Namespace) -> int:
     """Execute the `demo` sub-command and return a process exit code."""
-    asyncio.run(_async_demo(args))
+    if getattr(args, "full", False):
+        asyncio.run(_async_full_demo(args))
+    else:
+        asyncio.run(_async_demo(args))
     return EXIT_OK
 
 
@@ -627,6 +836,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_demo.add_argument("--query", default=DEMO_QUERY, help="检索关键词")
     p_demo.add_argument("--top-k", type=int, default=3, help="返回命中条数，默认 3")
     p_demo.add_argument("--json", action="store_true", help="以 JSON 输出结论")
+    p_demo.add_argument(
+        "--full", action="store_true",
+        help="跑完整治理链路（双版本提交 / REVERT_VERSION / RECLASSIFY / DAG 与检索复核）",
+    )
     p_demo.set_defaults(func=_run_demo)
 
     p_audit = subparsers.add_parser(
@@ -678,6 +891,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify_citation.add_argument("--json", action="store_true", help="以 JSON 格式输出校验报告")
     p_verify_citation.set_defaults(func=_run_verify_citation)
 
+    p_telemetry = subparsers.add_parser(
+        "telemetry",
+        help="查看/开关 opt-in 匿名遥测，并自查完整原始 payload（默认关闭，本版本不外发）",
+    )
+    consent_group = p_telemetry.add_mutually_exclusive_group()
+    consent_group.add_argument("--enable", action="store_true", help="显式开启匿名计数（唯一允许采集的方式）")
+    consent_group.add_argument("--disable", action="store_true", help="关闭匿名计数")
+    p_telemetry.add_argument("--show", action="store_true", help="打印将要发送的完整原始 payload 供自查")
+    p_telemetry.add_argument("--data-dir", default=str(_default_data_dir()), help="数据目录，默认 ./OmniLore_Data")
+    p_telemetry.set_defaults(func=_cmd_telemetry)
+
     p_version = subparsers.add_parser("version", help="打印版本号")
     p_version.set_defaults(func=_cmd_version)
 
@@ -705,6 +929,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     if getattr(args, "func", None) is None:
         parser.print_help()
         return EXIT_OK
+
+    # D3 constraint 1/2: strictly opt-in.  When consent is off (the default)
+    # this call does zero filesystem writes; it only reads one env var and
+    # checks whether a state file exists.  The sub-command is always the first
+    # token because this parser has no global options before it.
+    command_tokens = list(argv) if argv is not None else sys.argv[1:]
+    command_name = command_tokens[0] if command_tokens and not command_tokens[0].startswith("-") else "other"
+    try:
+        record_command(resolve_data_dir(getattr(args, "data_dir", None)), command_name)
+    except Exception:
+        pass  # telemetry must never block the main flow
 
     runner: Callable[[Namespace], int] = args.func
     try:

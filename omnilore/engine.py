@@ -3129,34 +3129,38 @@ class OmniLoreMCPGateway:
                                 later["doc_id"], []
                             ).append(earlier["doc_id"])
 
+                current_doc_id = series_rows[0].get("current_doc_id") if series_rows else None
                 dag = CausalEvolutionDAG(series_id=series_id)
-                for index, version_doc in enumerate(version_docs):
+                for version_doc in version_docs:
                     node_key = version_doc["doc_id"]
                     doc_status = version_doc.get("doc_status", "")
-                    reverts_version_key = (
-                        version_docs[index - 1]["doc_id"]
-                        if doc_status == DocStatus.REVERTED.value and index > 0
-                        else None
-                    )
+                    # `REVERTED` is a *flat* state flag: it says this version was
+                    # rolled back, NOT that it rolled back its predecessor.  The
+                    # engine has no "which version reverted me" pointer, so we
+                    # must not fabricate one — doing so used to render v2 as
+                    # "REVERT(v1)" when in fact v2 was the version being undone.
+                    # The honest signal is the state plus the restored current id.
+                    summary_note = f"{doc_status} | {version_doc.get('title', '')}"
+                    if doc_status == DocStatus.REVERTED.value and current_doc_id:
+                        summary_note += f" | 已回退，当前版本 {current_doc_id}"
                     dag.add_version(
                         version_key=node_key,
                         version_label=version_doc.get("version_label", node_key),
                         doc_id=node_key,
                         file_hash=version_doc.get("file_hash", ""),
                         committed_at=version_doc.get("created_at", ""),
-                        reverts_version_key=reverts_version_key,
+                        reverts_version_key=None,
                         supersedes_version_keys=sorted(
                             supersedes_by_source.get(node_key, [])
                         ),
                         diff_summary={"added": 0, "deleted": 0},
-                        summary_note=f"{doc_status} | {version_doc.get('title', '')}",
+                        summary_note=summary_note,
                     )
 
                 # 只通过公开 API 读取 DAG：get_lineage() 返回 asdict 后的节点列表，
                 # render_ascii_lineage() 返回可读的 ASCII 谱图。
                 lineage = dag.get_lineage()
                 nodes = {node["version_key"]: node for node in lineage}
-                current_doc_id = series_rows[0].get("current_doc_id") if series_rows else None
                 root_version_key = lineage[0]["version_key"] if lineage else None
                 latest_version_key = (
                     current_doc_id

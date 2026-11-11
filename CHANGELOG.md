@@ -70,6 +70,20 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   字节流（含 xref 表与 Type1 字体），覆盖 `pdfplumber` 与 `pypdf` 双路径文本提取、
   页码切块、真实入库以及 CAS SHA-256 逐字节对账（篡改期望摘要即 `ASSET_CORRUPTED`）。
   「多格式入库」维持 `Implemented`，按 CI 连续 ≥2 次绿灯的门槛暂不升级。
+- **opt-in 匿名遥测（D3 兑现）**：`omnilore/telemetry.py` 与 `omnilore telemetry` 实现
+  严格 opt-in（只有 `--enable` 能开启）、默认关闭（全新安装 / `bootstrap` / `demo` 写零遥测字节）、
+  字段极简（仅子命令 / 降级 / 检索模式的匿名聚合计数）、`--show` 打印完整原始 payload
+  并由递归键名白名单拒绝 PII、写入失败静默放弃、`OMNILORE_TELEMETRY=0` 全局优先。
+  **本版本没有网络外发**：`transport.implemented` 恒为 `false`，`transmit()` 是显式 no-op。
+- **完整治理 Demo（R-05f）**：`omnilore demo --full` 在同一版本链提交两个版本，
+  执行 `REVERT_VERSION` 与 `RECLASSIFY`，再用 `EVOLUTION_DAG` 与全新检索复核；
+  每步断言真实状态转换，不符即 `DEMO_INTEGRITY_FAILED` 非零退出，不打印「看起来成功」的摘要。
+- **因果边诚实化**：`EVOLUTION_DAG` 不再把 `REVERTED` 状态伪造成「该版本撤销了前版」的
+  反向因果边。`REVERTED` 只是扁平状态标记，引擎没有「被哪一版撤销」的指针，谱图改为
+  如实标注状态与「已回退，当前版本 X」；`reverts_version_key` 保持为空。
+- **文档站 8 页与中英双语 README**：`docs/site/` 下 8 页按任务组织的文档
+  （快速上手 / 核心概念 / MCP 工具 / 治理动作 / 证据与完整性 / 架构与边界 / 贡献指南）
+  与 `README.en.md`；链接均指向入库文件，能力描述沿用四态口径。纯文档产出，未接入站点生成器。
 - **`sql/002_omnilore_bootstrap_seed.sql`**：PostgreSQL 模式下的最小 seed。
 
 **诚实标注与贡献入口**
@@ -81,7 +95,7 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **R-13 能力状态矩阵（四态标注）**：新增 [`docs/FEATURE_STATUS.md`](docs/FEATURE_STATUS.md)，
   README 里的**每一条能力**都标注 `Implemented` / `Tested-real` / `Simulated` / `Planned`
   四态之一，逐条对应，并由测试守护「README ↔ 矩阵 ↔ CHANGELOG 三处一致」。
-  当前 **36 条**能力标注：`Implemented` 13 条、`Tested-real` 10 条、`Simulated` 12 条、`Planned` 1 条
+  当前 **38 条**能力标注：`Implemented` 16 条、`Tested-real` 10 条、`Simulated` 12 条、`Planned` 0 条
   （`真实 PostgreSQL 集成 CI` 在 CI 连续 2 次绿灯后由 `Implemented` 升为 `Tested-real`）。
   ⚠️ 其中「混合检索（BM25 + 向量 + 代码符号）」标 `Simulated` —— `hybrid`（1024 维向量）
   路径在 CI 里是 monkeypatch 桩（无真实网络调用），只有 `keyword_only` 真实执行。
@@ -246,11 +260,11 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
     **但边界不变**：它只证明 `sql/001` 的 SQL 策略在真实 PG 上生效，
     **不等于业务运行时已接入 PostgreSQL / 数据已持久化**。
     `ARM64 架构验证` 当时因只有 1 次绿灯维持 `Implemented`；此后累计 3 次绿灯，已按同一门槛升为 `Tested-real`。
-- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 186 个测试 +
+- **CI 门禁**：Python 3.11 × 3.12 × {ubuntu, windows}-latest 的**离线**矩阵，跑 202 个测试 +
   ruff + DCO 校验 + 静态红线守卫，全程不使用任何 Secret；**另有一个独立的 `integration-rls`
   job 需要真实 PostgreSQL service container**（见上），它是全仓唯一需要外部服务的门禁，
   同样不使用任何 Secret。
-- **测试套件**：186 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、37 项首发专项、
+- **测试套件**：202 项 —— 10 项安全与 RLS 验收、9 项全阶段验收、37 项首发专项、
   61 项路线图专项（主权 / 诚实标注 / 贡献入口 / 真实 PG 集成 CI 配置守卫 /
   证据包导出与篡改测试 / 21 条 RLS 策略注释守卫 / 两条真实 PG 例外的证据性质守卫）、
   30 项 W6 专项
@@ -264,13 +278,17 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
   10 项答案引用巡检专项（`test_citation_guard.py`：声明抽取与去重 / 捏造引用告警 /
   张冠李戴检测 / 可显式关闭 / 折叠预算不产生假阴性）、
   5 项真实 PDF 入库专项（`test_pdf_ingestion_real.py`：规范真实 PDF 字节流 /
-  `pdfplumber` → `pypdf` 回退 / 页码切块 / 入库与 CAS SHA-256 对账）。
+  `pdfplumber` → `pypdf` 回退 / 页码切块 / 入库与 CAS SHA-256 对账）、
+  12 项 opt-in 遥测专项（`test_telemetry.py`：默认关闭零写入 / 显式 consent /
+  `--show` 完整 payload / PII 键名拒绝 / 写入失败静默 / `OMNILORE_TELEMETRY=0` 优先）、
+  4 项完整治理 Demo 专项（`test_demo_full.py`：双版本与撤销重分类端到端 /
+  文本模式步骤 / 跨进程 DAG 读取 / 磁盘 SHA-256 对账与因果边诚实化）。
   绝大多数业务用例跑在 `RLSDatabaseEngine` **内存仿真引擎**上（另有 2 条守卫只做静态文本
   判定、不碰引擎），与 PostgreSQL RLS 同构但
   **不是真实 PostgreSQL**；新增的 5 项接线用例同样离线（mock），不产生真实 PG 证据。
 - **`docs/HANDOVER.md`（交接文档）**：面向接手本项目的下一个 agent 或新贡献者，
   目标是不追问即可开工。含：项目目标与三层定位、技术栈与六项拍板决策、
-  进度快照与 CI 实况、源码路径地图（24 个模块含行数）、产出归档索引、
+  进度快照与 CI 实况、源码路径地图（26 个模块含行数）、产出归档索引、
   剩余任务清单（11 项，各带优先级 / 依赖 / 验收标准 / 执行者）、5 条已知未决问题、
   12 条硬性红线（含「平台专属命令必须先判平台」「守卫必须经变异测试验证」
   「CI 类条目升 `Tested-real` 需连续 ≥2 次绿灯」）、环境要求与操作日志。
@@ -287,7 +305,7 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **README 核心能力小节按四态标注组织**：每条能力都带 `Implemented` / `Tested-real` /
   `Simulated` / `Planned` 徽章，不存在没有状态标注的裸宣称。
 - **测试口径三处一致**：README、本文件、`docs/FEATURE_STATUS.md` 均写明 ——
-  140 项业务用例跑在 `omnilore.engine.RLSDatabaseEngine` 上，这是一个**内存仿真引擎**，
+  **绝大多数业务用例**跑在 `omnilore.engine.RLSDatabaseEngine` 上，这是一个**内存仿真引擎**，
   与 PostgreSQL RLS **同构但不是真实 PostgreSQL**；新增的 5 项 PG 运行时接线用例用
   **离线 mock**，也不连真实 PG；因此 RLS 相关条目一律标 `Simulated`
   （两条 `Tested-real` 例外的证据性质**不同**：①「真实 PostgreSQL RLS 策略与跨空间读拦截」
@@ -441,6 +459,8 @@ OmniLore 是一个以**不可变原始证据（SHA-256 CAS）**为基础、以**
 - **文件系统与数据库不承诺跨系统事务原子性**：用 Outbox 补偿与一致性对账把不一致显式报出，
   详见 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md)。
 - **未宣称任何合规认证**（SOC2 / ISO / 等保）。措辞严格限定为「技术可追溯」。
-- **opt-in 匿名遥测仅落决策**（见 `docs/DECISIONS.md`），尚未实现，排期在后续版本。
+- **匿名遥测不含网络外发**：D3 的 opt-in 匿名遥测已实现本地计数与 `--show` 自查
+  （默认关闭、`OMNILORE_TELEMETRY=0` 全局优先），但本版本没有上传端点、HTTP 客户端或
+  后台进程，`transport.implemented` 恒为 `false`（见 `docs/DECISIONS.md`）。
 - **`omnilore/engine.py` 的架构级重构未做**：它是全库最大的源文件，也是贡献者的
   心理门槛；重构排期在贡献者规模上来之后，本次遵循变更最小化原则未动。

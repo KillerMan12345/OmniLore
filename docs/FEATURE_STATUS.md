@@ -55,7 +55,7 @@
 - 它没有真实的 MVCC、锁、事务隔离级别与 `pgvector` 索引行为；
 - 进程退出后结构化状态清空（磁盘上的原始资产与 Markdown 知识页保留）。
 
-所以：**「186 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已验证」。**
+所以：**「202 个测试全绿」证明的是逻辑正确性，不等于「真实 PG 上的 RLS 已验证」。**
 其中绝大多数业务用例跑在内存仿真引擎上，少数几条守卫只做静态文本/配置判定（不碰引擎，
 例如 `make` 目标存在性、仓库 LF、compose 启动超用户角色名），
 另有 5 个 `test_pg_runtime_wiring.py` 用例用
@@ -135,7 +135,7 @@ exit 2/3 都会让 job 变红），**并已于 2026-10-26 连续 2 次真实绿�
 | MCP stdio 工具暴露 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-mcp` | CI 以真实管道完成 JSON-RPC 握手 |
 | 零密钥降级如实上报 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-degradation` | `retrieval_mode` / `degraded_reason` 正交 |
 | 跨平台 LF 规范化 | `Tested-real` | 核心能力 / 其他宣称 | `make verify-lf` | `windows-latest` 上跑同一套离线用例 + LF 守卫。**边界**：该 job 自 Run #2 起一直红（根因=en-US runner 的 cp1252 代码页，已修但**未推送复验**），Windows 侧回归门禁**当前尚未真正生效**；Windows 证据来自开发者本机真实 NTFS 全量运行 |
-| opt-in 匿名遥测 | `Planned` | 核心能力 / 尚未实现 | — | 决策已接受，实现排期 Q2 |
+| opt-in 匿名遥测 | `Implemented` | 核心能力 / 隐私 | `omnilore telemetry --show` | D3 的 6 条硬约束均有离线用例：严格 opt-in（只有 `--enable` 能开启）、默认关闭（全新安装 / `bootstrap` / `demo` 写零遥测字节）、字段极简（仅子命令 / 降级 / 检索模式匿名聚合计数）、`--show` 打印完整原始 payload 并由递归键名白名单拒绝 PII、写入失败静默放弃、`OMNILORE_TELEMETRY=0` 全局优先。**边界（必须一并读）**：本版本**没有网络外发**，`transport.implemented` 恒为 `false`，`transmit()` 是显式 no-op；因此它不是「已上线的遥测服务」，不标 `Tested-real` |
 | 模型 provider 抽象（R-04b） | `Implemented` | 核心能力 / 其他宣称 | `make verify-provider` | 向量来源可替换：`OMNILORE_EMBEDDING_PROVIDER` = `dashscope`（默认，行为与抽象前**逐字一致**）/ `openai`（任意 OpenAI 兼容端点：OpenAI / Azure / **Ollama** / vLLM / LM Studio）/ `none`；`OMNILORE_EMBEDDING_BASE_URL` + `OMNILORE_EMBEDDING_API_KEY` 指向自建端点（本地回环地址免 key）。四个曾经的「预留、不读取」变量（`OMNILORE_PRIMARY_MODEL` / `_ESCALATED_MODEL` / `_EMBEDDING_MODEL` / `_EMBEDDING_DIM`）**现已生效**，由 `ModelAdapterConfig.__post_init__` 读取，并有测试断言它们进入**真实请求体**。**证据边界**：用例用 `monkeypatch` 的假 HTTP 端点验证请求体/维度/降级，**没有对真实 OpenAI / Ollama 端点发过请求**，故不标 `Tested-real` |
 | ARM64 架构验证（R-11b） | `Tested-real` | 核心能力 / 其他宣称 | —（CI `arm64` job） | CI 新增独立 `arm64` job（`ubuntu-24.04-arm`）跑同一套离线用例 + `ruff` + 冒烟；`integration-rls` 刻意留在 x86。**已 3 次绿灯**（Run #2 `5d513fe`、#4 `cb45932`、#5 `effbb02`，其中 #4/#5 连续），达到「连续 ≥2 次绿灯」的升级门槛，故标 `Tested-real`。**边界**：绿灯只覆盖**离线套件 + `ruff` + 零密钥冒烟**，**不覆盖真实 PostgreSQL 业务数据面** |
 | 统一数据目录解析（R-11b） | `Implemented` | 核心能力 / 其他宣称 | `make verify` | 只有一个解析入口 `omnilore.pathutil.resolve_data_dir`；`ops/index` / `ops/bootstrap.json` / `ops/audit_bundles` 同根。静态守卫（`TestUnifiedDataDir`）禁止任何模块自己调 `.expanduser()` 或直接读 `OMNILORE_DATA_DIR` |
@@ -146,9 +146,11 @@ exit 2/3 都会让 job 变红），**并已于 2026-10-26 连续 2 次真实绿�
 | MRP 变更预审与引用真实性核验（INSPECT_PLAN / VERIFY_CITATION） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `review_and_fix_knowledge` 新增两个治理动作，action 枚举由 `[a.value for a in ReviewAction]` 动态生成；`INSPECT_PLAN` 用 `dataclasses.asdict(plan)` 输出差异、风险评级与受影响小节（真实字段 `impacted_headings` + 对外别名 `sections_affected`），`VERIFY_CITATION` 把 `citation_text` 映射为 `claim_text` 并补齐 `status` / `overlap_score` / `best_snippet` 对外别名。**边界**：核验对象是本地 Wiki 正文与内存引擎中的文档，不是外部事实库；未证实引用在文本与 `--json` 两种模式下均以退出码 3 失败关闭（`status` 字段同时给出判定） |
 | 治理 CLI 跨进程状态回填（plan / history / verify-citation） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `omnilore plan` / `history` / `verify-citation` 支持文本与 `--json` 输出；`_hydrate_runtime_state()` 复用 `load_runtime_index` 把 `documents` / `document_series` / `assets` / `document_assets` 回填进内存引擎 `db._state`，仅在 `RLSDatabaseEngine` 且 `documents` 为空时生效，PG 后端与同进程已有数据不覆盖。**边界**：索引只是派生物、只负责定位，正文仍从磁盘真实字节读取；跨进程回填没有接入 CI 的真实子进程自动化用例，不能标 `Tested-real` |
 | 答案合成自动引用巡检（Citation Guard） | `Implemented` | 核心能力 / 增量能力 | `make verify` | `omnilore/citation_guard.py` 在 `search_knowledge` 中默认对合成答案抽取引用片段（`citations` / `[ref: ...]` / 引号 / 无标注时按句兜底），逐条与本次检索返回的**未折叠**证据块比对，输出 `citation_verifications`、`citation_grounding` 汇总与 `unverified_citations_detected` 告警；能识别捏造引用与张冠李戴（声明 doc_id 与最佳匹配不符）。**边界**：只新增报告字段，不改写答案、`has_sufficient_evidence` 或两条正交降级轴；证据范围仅限本次命中块，不是全库或外部事实库；`verify_citations=False` 可显式关闭；10 项离线用例跑在内存仿真引擎上，不证明真实 PG 数据面 |
+| 完整治理 Demo（双版本 / 撤销 / 重分类） | `Implemented` | 核心能力 / 增量能力 | `omnilore demo --full --json` | 同版本链提交 v1.0 / v2.0，执行 `REVERT_VERSION` 恢复 v1.0、执行 `RECLASSIFY` 迁移分类，再用 `EVOLUTION_DAG` 与一次全新检索复核；每步断言真实状态转换，不符即 `DEMO_INTEGRITY_FAILED` 非零退出。4 项离线用例含**跨进程** `history` 读取与磁盘 SHA-256 逐字节对账。**边界**：跑在内存仿真引擎上，不是真实 PG 数据面证据；可复跑素材不等于真人验证 |
+| 文档站 8 页与中英双语 README | `Implemented` | 核心能力 / 增量能力 | `make verify` | `docs/site/` 下 8 页（概览 / 快速上手 / 核心概念 / MCP 工具 / 治理动作 / 证据与完整性 / 架构与边界 / 贡献指南）+ `README.en.md`；链接均指向入库文件，能力描述沿用四态口径。**边界**：纯文档产出，未接入任何站点生成器或在线托管，不标 `Tested-real` |
 
 **当前统计（由测试守护，与 README / CHANGELOG 三处一致）：**
-`Implemented` 13 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 1 条 —— 合计 **36 条**。
+`Implemented` 16 条 ｜ `Tested-real` 10 条 ｜ `Simulated` 12 条 ｜ `Planned` 0 条 —— 合计 **38 条**。
 
 ---
 
